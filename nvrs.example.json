@@ -1,0 +1,4 @@
+[
+  {"host": "192.168.1.10", "port": 554, "user": "admin", "password": "CHANGE_ME",
+   "channels": 12, "first_camera": 1, "subtype": 1}
+]

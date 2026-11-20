@@ -1,0 +1,969 @@
+{
+  "mediamtx": "rtsp://mediamtx:8554",
+  "thresholds": {
+    "warning": 2.0,
+    "critical": 4.0
+  },
+  "cameras": [
+    {
+      "zone": "Zone A",
+      "location": "outside",
+      "role": "inout",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam01",
+      "name": "Gate 1 IN/OUT"
+    },
+    {
+      "zone": "Zone A",
+      "location": "outside",
+      "role": "inout",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam02",
+      "name": "Gate 2 IN/OUT"
+    },
+    {
+      "zone": "Zone A",
+      "location": "outside",
+      "role": "inout",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam03",
+      "name": "Gate 3 IN/OUT"
+    },
+    {
+      "zone": "Zone A",
+      "location": "outside",
+      "role": "inout",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam04",
+      "name": "Gate 4 IN/OUT"
+    },
+    {
+      "zone": "Zone A",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam05",
+      "name": "Camera 05"
+    },
+    {
+      "zone": "Zone A",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam06",
+      "name": "Camera 06"
+    },
+    {
+      "zone": "Zone A",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam07",
+      "name": "Camera 07"
+    },
+    {
+      "zone": "Zone A",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam08",
+      "name": "Camera 08"
+    },
+    {
+      "zone": "Zone B",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam09",
+      "name": "Camera 09"
+    },
+    {
+      "zone": "Zone B",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam10",
+      "name": "Camera 10"
+    },
+    {
+      "zone": "Zone B",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam11",
+      "name": "Camera 11"
+    },
+    {
+      "zone": "Zone B",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam12",
+      "name": "Camera 12"
+    },
+    {
+      "zone": "Zone B",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam13",
+      "name": "Camera 13"
+    },
+    {
+      "zone": "Zone B",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam14",
+      "name": "Camera 14"
+    },
+    {
+      "zone": "Zone B",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam15",
+      "name": "Camera 15"
+    },
+    {
+      "zone": "Zone B",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam16",
+      "name": "Camera 16"
+    },
+    {
+      "zone": "Zone C",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam17",
+      "name": "Camera 17"
+    },
+    {
+      "zone": "Zone C",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam18",
+      "name": "Camera 18"
+    },
+    {
+      "zone": "Zone C",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam19",
+      "name": "Camera 19"
+    },
+    {
+      "zone": "Zone C",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam20",
+      "name": "Camera 20"
+    },
+    {
+      "zone": "Zone C",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam21",
+      "name": "Camera 21"
+    },
+    {
+      "zone": "Zone C",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam22",
+      "name": "Camera 22"
+    },
+    {
+      "zone": "Zone C",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam23",
+      "name": "Camera 23"
+    },
+    {
+      "zone": "Zone C",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam24",
+      "name": "Camera 24"
+    },
+    {
+      "zone": "Zone D",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam25",
+      "name": "Camera 25"
+    },
+    {
+      "zone": "Zone D",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam26",
+      "name": "Camera 26"
+    },
+    {
+      "zone": "Zone D",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam27",
+      "name": "Camera 27"
+    },
+    {
+      "zone": "Zone D",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam28",
+      "name": "Camera 28"
+    },
+    {
+      "zone": "Zone D",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam29",
+      "name": "Camera 29"
+    },
+    {
+      "zone": "Zone D",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam30",
+      "name": "Camera 30"
+    },
+    {
+      "zone": "Zone D",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam31",
+      "name": "Camera 31"
+    },
+    {
+      "zone": "Zone D",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam32",
+      "name": "Camera 32"
+    },
+    {
+      "zone": "Zone E",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam33",
+      "name": "Camera 33"
+    },
+    {
+      "zone": "Zone E",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam34",
+      "name": "Camera 34"
+    },
+    {
+      "zone": "Zone E",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam35",
+      "name": "Camera 35"
+    },
+    {
+      "zone": "Zone E",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam36",
+      "name": "Camera 36"
+    },
+    {
+      "zone": "Zone E",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam37",
+      "name": "Camera 37"
+    },
+    {
+      "zone": "Zone E",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam38",
+      "name": "Camera 38"
+    },
+    {
+      "zone": "Zone E",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam39",
+      "name": "Camera 39"
+    },
+    {
+      "zone": "Zone E",
+      "location": "outside",
+      "role": "density",
+      "line": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.9,
+          0.5
+        ]
+      ],
+      "in_side": "positive",
+      "vertical_fov_deg": 50.0,
+      "horizontal_fov_deg": 70.0,
+      "tilt_deg": 30.0,
+      "reference_height_m": 1.7,
+      "camera_height_m": null,
+      "area_m2": null,
+      "id": "cam40",
+      "name": "Camera 40"
+    }
+  ]
+}

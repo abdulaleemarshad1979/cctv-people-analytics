@@ -1,0 +1,35 @@
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:1
+    restart: unless-stopped
+    ports:
+      - "${MEDIAMTX_BIND:-127.0.0.1}:8554:8554"   # RTSP; keep on localhost unless something outside must publish
+    volumes:
+      - ./config/mediamtx.yml:/mediamtx.yml:ro
+
+  analytics:
+    build: .
+    image: cctv-people-analytics
+    restart: unless-stopped
+    depends_on:
+      - mediamtx
+    ports:
+      - "${WEB_BIND:-0.0.0.0}:${WEB_PORT:-5000}:5000"
+    volumes:
+      - ./config:/config
+      - ./weights:/weights:ro
+    environment:
+      DM_COUNT_WEIGHTS: /weights/model_nwpu.pth
+      CSRNET_WEIGHTS: /weights/csrnet_shtechA.pth
+      BASIC_AUTH_USER: ${BASIC_AUTH_USER:-}
+      BASIC_AUTH_PASSWORD: ${BASIC_AUTH_PASSWORD:-}
+      INOUT_FPS: ${INOUT_FPS:-5}
+      INOUT_IMGSZ: ${INOUT_IMGSZ:-480}
+      CROWD_INTERVAL_S: ${CROWD_INTERVAL_S:-60}
+      GATE_YIELD_RATIO: ${GATE_YIELD_RATIO:-0.8}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:5000/healthz', timeout=4)"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 90s

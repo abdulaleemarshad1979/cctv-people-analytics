@@ -1,0 +1,13 @@
+# MediaMTX: the RTSP hub between your NVR(s) and the analytics app (camera "cam01" = rtsp://mediamtx:8554/cam01).
+# Replace this file's paths with scripts/gen_mediamtx.py (see README), or add your own below.
+logLevel: info
+rtsp: yes
+rtspAddress: :8554
+protocols: [tcp]
+rtmp: no
+hls: no
+webrtc: no
+srt: no
+api: no
+paths:
+  all_others:   # anything may publish here, e.g. ffmpeg -re -i clip.mp4 -c copy -f rtsp rtsp://localhost:8554/cam01

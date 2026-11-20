@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>People Counting &amp; Crowd Density - AP Police</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/monitor/css/analytics.css">
+</head>
+<body>
+  <div class="sticky-nav-wrapper">
+    <header class="header">
+      <div class="header__brand">
+        <img src="/static/monitor/img/ap_police_logo.png" alt="AP Police Logo" class="brand-logo">
+        <div>
+          <h1 class="brand-title">Andhra Pradesh Police Department</h1>
+          <div class="brand-subtitle">CCTV People Counting &amp; Crowd Density Analytics</div>
+        </div>
+      </div>
+      <div class="dignitaries-group">
+        <div class="dignitary-card">
+          <img src="/static/monitor/img/cm.png" alt="Hon'ble CM Sri N. Chandrababu Naidu" class="dignitary-img">
+          <div class="dignitary-name">Sri N. Chandrababu Naidu</div>
+          <div class="dignitary-desig">Hon'ble Chief Minister</div>
+        </div>
+        <div class="dignitary-card">
+          <img src="/static/monitor/img/dgp.png" alt="DGP Sri Harish Kumar Gupta, IPS" class="dignitary-img">
+          <div class="dignitary-name">Sri Harish Kumar Gupta, IPS</div>
+          <div class="dignitary-desig">DGP, Andhra Pradesh</div>
+        </div>
+        <div class="dignitary-card">
+          <img src="/static/monitor/img/sp.png" alt="SP Sri D. Narasimha Kishore, IPS" class="dignitary-img">
+          <div class="dignitary-name">Sri D. Narasimha Kishore, IPS</div>
+          <div class="dignitary-desig">SP, East Godavari</div>
+        </div>
+      </div>
+    </header>
+
+    <div class="nav-control-bar">
+      <div class="filter-group" id="filters">
+        <button class="pill active" data-filter="all">All Cameras</button>
+        <button class="pill" data-filter="inout">In / Out</button>
+        <button class="pill" data-filter="density">Density</button>
+        <button class="pill" data-filter="both">Both</button>
+        <button class="pill" data-filter="offline">Offline</button>
+        <select class="zone-select" id="loc" aria-label="Location"><option value="">Inside + outside</option><option value="inside">Inside temple / ghat</option><option value="outside">Outside temple / ghat</option></select>
+        <select class="zone-select" id="zone" aria-label="Zone"><option value="">All zones</option></select>
+      </div>
+      <div class="nav-right-group"><span class="infer-chip" id="infer">Connecting…</span></div>
+    </div>
+
+    <div class="stats-bar" id="totals">
+      <div class="stat"><small>Total people</small><strong id="t-people">–</strong><span>Inside + outside</span></div>
+      <div class="stat inside"><small>Inside temple / ghat</small><strong id="t-ins">–</strong><span id="t-ins-sub">&nbsp;</span></div>
+      <div class="stat outside"><small>Outside temple / ghat</small><strong id="t-outs">–</strong><span id="t-outs-sub">&nbsp;</span></div>
+      <div class="stat in"><small>Gate IN</small><strong id="t-in">–</strong><span id="t-gates"></span></div>
+      <div class="stat out"><small>Gate OUT</small><strong id="t-out">–</strong><span id="t-net">&nbsp;</span></div>
+      <div class="stat"><small>Peak density</small><strong id="t-peak">–</strong><span id="t-peak-cam">people / m²</span></div>
+      <div class="stat"><small>Cameras online</small><strong id="t-online">–</strong><span id="t-total"></span></div>
+    </div>
+  </div>
+
+  <main class="grid-container">
+    <div class="grid" id="grid"></div>
+    <div class="empty-state hidden" id="empty">No cameras match this filter.</div>
+  </main>
+
+  <div class="full-view-modal hidden" id="modal" role="dialog" aria-modal="true" aria-labelledby="m-title">
+    <div class="full-view-backdrop" id="m-backdrop"></div>
+    <div class="full-view-content">
+      <div class="full-view-header">
+        <div class="full-view-title-group"><span class="full-view-badge" id="m-badge"></span><h2 class="full-view-title" id="m-title"></h2></div>
+        <button class="full-view-close-btn" id="m-close" aria-label="Close">✕</button>
+      </div>
+      <div class="full-view-layout">
+        <div class="full-view-body">
+          <img id="m-live" alt="Live annotated camera stream">
+          <div id="m-stage"><img id="m-photo" alt="Camera snapshot"><svg id="m-overlay" viewBox="0 0 100 100" preserveAspectRatio="none"></svg></div>
+        </div>
+        <aside class="panel" id="m-panel"></aside>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/monitor/js/analytics.js"></script>
+</body>
+</html>

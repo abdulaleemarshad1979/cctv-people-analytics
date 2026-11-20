@@ -1,0 +1,9 @@
+.git
+.env
+config
+weights
+__pycache__
+**/__pycache__
+cameras.json
+*.md
+test_*.py
