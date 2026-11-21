@@ -41,7 +41,7 @@ One dashboard for up to ~40 CCTV cameras. Each camera has a **role** and a **loc
 | Role | What it does |
 |---|---|
 | **In / Out** | Tracks people and counts each one when their feet cross a line you draw (same logic as `Count peoplr`). |
-| **Density** | Counts the crowd with the **DM-Count + CSRNet fusion** model from `CCTV_MONITOR` (80 % / 20 % blend, or the learned head if `fusion_head.pth` exists), draws a density heat map, and reports people per m² with a Safe / Warning / Critical level. |
+| **Density** | Counts the crowd with the **DM-Count + CSRNet fusion** model from `CCTV_MONITOR` (80 % / 20 % blend, or the learned head if `fusion_head.pth` exists), and reports people per m² with a Safe / Warning / Critical level. |
 | **Both** | Does both on the same camera: crossings plus head count and density. |
 | **Off** | Stops decoding that camera. |
 
@@ -94,18 +94,22 @@ Edit `cameras.json` (the UI also saves role, name, zone, line and calibration ba
 - **Count line (all 40 cameras):** every camera in `cameras.json` has its own line, direction and calibration, editable from its tile; the line is used when the role is In / Out or Both. *Edit count line* opens a snapshot with the current line. Drag either round handle to move or extend that end, drag the line itself to move it, *Extend to edges* stretches it to the frame border, *Reset line* restores the default, *Flip IN direction* swaps IN/OUT (the yellow arrow shows which way is IN). *Save line* applies it; totals are kept.
 - **Density:** enter the measured area in m², or enter lens FOV, tilt and mounting height (or click *Estimate camera height* and mark one person's head and feet). Without either, density shows "–" and only the head count is reported.
 
+**Full screen:** open a camera and press the corner button, double-click the video, or press `F` (Esc leaves full screen). The viewer shows the camera name and count only.
+
 ## Models
 
 - **Gate crossings:** the `Count peoplr` algorithm: person detection with `conf=0.12, iou=0.8`, ByteTrack IDs, and the foot-point line crossing in `people_analytics.py` (unchanged). The detector here is `yolov8n.pt` at 480 px for speed; set `PEOPLE_MODEL=yolo26s-seg.pt` (as in `Count peoplr`) and `INOUT_IMGSZ=960` for its exact model, about 4× slower per frame.
 - **Crowd count and density:** `dm_count/`, `csrnet/`, `fusion/` are copied from `CCTV_MONITOR`; the ~150 MB weights are read from `../CCTV_MONITOR/` (override with `CCTV_MONITOR_DIR`, `DM_COUNT_WEIGHTS`, `CSRNET_WEIGHTS`, `FUSION_HEAD_WEIGHTS`). Input is 512×288 as in CCTV_MONITOR's CPU mode; its broadcast-overlay filter and flip TTA are not used. If the weights are missing, the header says so and Density cameras stay at 0.
 
-## CPU budget (measured on this 8-core, no-GPU machine)
+## Speed and accuracy
 
-Two threads share the CPU: gate tracking (YOLO, ~24 ms/frame) and the crowd model (~1 s per frame).
+The video is kept clean and cheap: the count line plus the count only, with no heat maps, boxes or track IDs (set `SHOW_BOXES=1` to draw boxes while tuning a gate). The dashboard stays smooth because analysis never blocks it:
 
-- **Gates:** counting is only reliable at ≥ 5 checks/s. With a walker crossing 10 % of the frame per second, the counted share was ~17 % at 2/s, 43 % at 4/s and ~75 % at 5/s or more (synthetic clip, so treat as approximate and test each gate on its footage). Defaults: `INOUT_FPS=5`, `INOUT_IMGSZ=480`.
-- **Crowd:** one count per Density camera every `CROWD_INTERVAL_S` seconds (default 60). Crowd counting pauses while any gate runs below `GATE_YIELD_RATIO` (0.8) of its target, so a busy CPU delays crowd refreshes instead of silently losing crossings.
-- **Measured:** 4 gates + 36 crowd cameras ran with gates at ~3.5/s and every crowd camera counted about every 3 minutes at first. Tiles show an amber "slow" tag and the editor shows actual vs target. **For accurate gate counts on this CPU use 1–2 gates, or a GPU for more.** `CROWD_THREADS` caps crowd threads but also slows YOLO (torch setting is process-wide), so it is off by default.
+- **Live viewer:** an open camera is decoded at ~12 fps (`VIEW_FPS`); other cameras are only decoded at the rate analysis needs. Tiles are refreshed snapshots.
+- **Crowd model in its own process:** DM-Count + CSRNet runs in `crowd_worker.py` at low CPU priority, so it cannot slow the video, the gate tracker or the website. Gate tracking waits for nothing; crowd counting waits while a gate lags (`GATE_YIELD_RATIO`).
+- **Gates:** counting is only reliable at ≥ 5 checks/s. On a walker crossing 10 % of the frame per second, the counted share was ~17 % at 2/s, 43 % at 4/s and ~75 % at 5/s or more (synthetic clip: treat as approximate and test each gate on its own footage). Defaults: `INOUT_FPS=5`, `INOUT_IMGSZ=480`.
+- **Crowd:** one count per Density camera every `CROWD_INTERVAL_S` seconds (default 60), at the model's 512×288 input (`CROWD_INFER_WIDTH/HEIGHT` to raise it for accuracy at a CPU cost).
+- **Measured on this 8-core, no-GPU machine** with 4 gates + 36 crowd cameras: live viewer ~10 fps, pages and tiles load in milliseconds, gates ~3.4/s (4.4/s when crowd counting is idle) and a full crowd round in about 4 minutes. For accurate counts on 4 gates and 36 crowd cameras you need a GPU or fewer cameras; the editor shows each gate's actual rate against its target and a tile turns amber ("slow") when it falls behind.
 
 ## Known limits
 

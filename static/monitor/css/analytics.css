@@ -150,3 +150,17 @@ button { font: inherit; }
 #src-msg { font-size: 12px; font-weight: 600; color: var(--warning-amber); }
 .src-body .btn { margin: 0; }
 .src-body .btn.ghost { padding: 5px 10px; }
+
+/* ---------- Full screen (like YouTube): the video area goes full screen, controls fade out when idle ---------- */
+.fs-btn { position: absolute; right: 12px; bottom: 12px; z-index: 5; width: 38px; height: 38px; border-radius: 8px; border: 0; cursor: pointer;
+  background: rgba(15,23,42,.72); color: #fff; display: flex; align-items: center; justify-content: center; transition: opacity .25s, background .2s; }
+.fs-btn:hover { background: var(--accent-blue); }
+.fs-title { display: none; position: absolute; left: 0; right: 0; top: 0; z-index: 5; padding: 16px 20px; color: #fff; font-size: 18px; font-weight: 700;
+  background: linear-gradient(rgba(0,0,0,.65), transparent); transition: opacity .25s; pointer-events: none; }
+.full-view-body:fullscreen { background: #000; width: 100vw; height: 100vh; }
+.full-view-body.pseudo-fs { position: fixed; inset: 0; z-index: 20000; background: #000; }
+.full-view-body:fullscreen img, .full-view-body.pseudo-fs img { width: 100%; height: 100%; object-fit: contain; max-width: none; max-height: none; }
+.full-view-body:fullscreen .fs-title, .full-view-body.pseudo-fs .fs-title { display: block; }
+.full-view-body:fullscreen .fs-btn, .full-view-body.pseudo-fs .fs-btn { right: 20px; bottom: 20px; width: 46px; height: 46px; }
+.full-view-body.idle .fs-btn, .full-view-body.idle .fs-title { opacity: 0; }
+.full-view-body.idle:fullscreen, .full-view-body.pseudo-fs.idle { cursor: none; }

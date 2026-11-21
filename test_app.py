@@ -62,6 +62,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual((inside["area_m2"], inside["density"], inside["peak_density"]), (20.0, 1.75, 3.0))
 
     def test_login_flow(self):
+        self.assertTrue(app.app.secret_key)  # set at import: a login POST as the very first request must not crash
         client = app.app.test_client()
         old, app.AUTH = app.AUTH, ("admin", "admin123")
         try:

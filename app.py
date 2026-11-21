@@ -13,6 +13,8 @@ import logging
 import math
 import os
 import re
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -22,7 +24,6 @@ from pathlib import Path
 from urllib.parse import quote
 
 import cv2
-import numpy as np
 from flask import Flask, Response, abort, jsonify, redirect, request, session
 from people_analytics import LineCounter, estimate_camera_geometry, estimate_height_from_person
 
@@ -40,6 +41,8 @@ INOUT_IMGSZ = int(os.getenv("INOUT_IMGSZ", "480"))
 TRACK_FPS = float(os.getenv("INOUT_FPS", "5"))
 CROWD_INTERVAL = float(os.getenv("CROWD_INTERVAL_S", "60"))
 YIELD_RATIO = float(os.getenv("GATE_YIELD_RATIO", "0.8"))  # crowd counting pauses while a gate runs below this share of its target
+SHOW_BOXES = os.getenv("SHOW_BOXES", "0") == "1"   # boxes and track ids on the video; off by default (cleaner, cheaper)
+VIEW_FPS = float(os.getenv("VIEW_FPS", "12"))        # video smoothness while a camera is open in the viewer
 FPS = {"inout": TRACK_FPS, "both": TRACK_FPS, "density": 1 / CROWD_INTERVAL}
 ROLES = ("inout", "density", "both", "off")
 LOCATIONS = ("inside", "outside")
@@ -161,7 +164,7 @@ class Camera:
         self.status = "starting"
         self.due = self.crowd_due = 0.0
         self.times = deque(maxlen=20)
-        self.crowd_seq, self.dmap, self.counted_at = 0, None, None
+        self.crowd_seq, self.counted_at, self.watch_until = 0, None, 0.0   # watch_until: someone is viewing this camera
 
     # ---- capture -------------------------------------------------------------------
     def set_status(self, status):
@@ -223,7 +226,8 @@ class Camera:
             if is_file:
                 time.sleep(1 / file_fps)  # files read unthrottled otherwise
             now = time.monotonic()
-            if now - last >= min(0.5, 1 / FPS[role]):  # decode only the frames we can use
+            gap = 1 / VIEW_FPS if now < self.watch_until else min(0.5, 1 / FPS[role])
+            if now - last >= gap:  # decode only the frames we can use (more of them while someone watches)
                 ok, frame = cap.retrieve()
                 if ok:
                     last = now
@@ -259,12 +263,12 @@ class Camera:
         """Crowd count from the DM-Count + CSRNet fusion model (density / both)."""
         with self.lock:
             frame, seq, role = self.frame, self.frame_seq, self.cfg["role"]
-        total, dmap = counter.count(frame)
+        total = counter.count(frame)
         now = time.monotonic()
         with self.lock:
             if self.cfg["role"] != role:
                 return
-            self.crowd_seq, self.dmap, self.counted_at = seq, dmap, now
+            self.crowd_seq, self.counted_at = seq, now
             self.people = round(total)
             self.crowd_due = now + CROWD_INTERVAL
 
@@ -295,19 +299,14 @@ class Camera:
         return out
 
     def render(self, width=None):
-        """Annotated JPEG of the latest frame, or None when no frame has arrived."""
+        """JPEG of the latest frame with the count line and the count only (boxes with SHOW_BOXES=1)."""
         with self.lock:
             frame, cfg, dets = self.frame, self.cfg, list(self.dets)
-            counts, people, dmap = self.counter.counts(), self.people, self.dmap
+            counts, people = self.counter.counts(), self.people
         if frame is None:
             return None
         frame = frame.copy()
         h, w = frame.shape[:2]
-        if cfg["role"] in DENSITY and dmap is not None:  # density heat map from the fusion model
-            heat = cv2.resize(dmap, (w, h), interpolation=cv2.INTER_LINEAR)
-            heat = np.clip(heat / max(float(heat.max()), 1e-6), 0, 1)
-            colour = cv2.applyColorMap((heat * 255).astype(np.uint8), cv2.COLORMAP_JET)
-            frame = np.where((heat > 0.12)[..., None], cv2.addWeighted(frame, 0.6, colour, 0.4, 0), frame)
         if cfg["role"] in TRACKING:
             a, b = cfg["line"]
             cv2.line(frame, (round(a[0] * w), round(a[1] * h)), (round(b[0] * w), round(b[1] * h)), YELLOW, 2)
@@ -318,18 +317,18 @@ class Camera:
             tip = (round(mx + sign * nx / norm * 45), round(my + sign * ny / norm * 45))
             cv2.arrowedLine(frame, (round(mx), round(my)), tip, YELLOW, 3, tipLength=0.4)
             cv2.putText(frame, "IN", (tip[0] + 6, tip[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.6, YELLOW, 2)
-        for track_id, (x1, y1, x2, y2) in dets:
+        for track_id, (x1, y1, x2, y2) in (dets if SHOW_BOXES else ()):
             cv2.rectangle(frame, (round(x1), round(y1)), (round(x2), round(y2)), GREEN, 2)
             cv2.circle(frame, (round((x1 + x2) / 2), round(y2)), 4, YELLOW, -1)
             cv2.putText(frame, f"#{track_id}", (round(x1), max(20, round(y1) - 7)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, GREEN, 2)
-        label = {"inout": f"IN {counts['in']}  OUT {counts['out']}  VISIBLE {people}",
+        label = {"inout": f"IN {counts['in']}  OUT {counts['out']}",
                  "both": f"IN {counts['in']}  OUT {counts['out']}  PEOPLE {people}",
                  "density": f"PEOPLE {people}"}.get(cfg["role"], "")
         cv2.putText(frame, label, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         if width and width < w:
             frame = cv2.resize(frame, (width, round(h * width / w)), interpolation=cv2.INTER_AREA)
-        ok, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 78])
+        ok, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 72])
         return jpg.tobytes() if ok else None
 
     def snapshot(self):
@@ -339,6 +338,39 @@ class Camera:
             return None
         ok, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 88])
         return jpg.tobytes() if ok else None
+
+
+class CrowdProcess:
+    """Parent-side handle of crowd_worker.py (frames in, counts out)."""
+
+    def __init__(self):
+        self.proc = subprocess.Popen([sys.executable, str(ROOT / "crowd_worker.py")], stdin=subprocess.PIPE,
+                                     stdout=subprocess.PIPE, cwd=str(ROOT))
+        line = self.proc.stdout.readline()
+        if not line:
+            raise RuntimeError("crowd worker exited at start-up (are the DM-Count/CSRNet weights present?)")
+        self.mode = json.loads(line).get("mode", "static")
+
+    def poll(self):
+        return self.proc.poll()
+
+    def count(self, frame):
+        h, w = frame.shape[:2]
+        if w > 1024:  # the model works at 512 px; do not push full-size frames through the pipe
+            frame = cv2.resize(frame, (1024, round(h * 1024 / w)), interpolation=cv2.INTER_AREA)
+            h, w = frame.shape[:2]
+        self.proc.stdin.write(f"{h} {w}\n".encode() + frame.tobytes())
+        self.proc.stdin.flush()
+        line = self.proc.stdout.readline()
+        if not line:
+            raise RuntimeError("crowd worker stopped")
+        return json.loads(line)["total"]
+
+    def close(self):
+        try:
+            self.proc.kill()
+        except OSError:
+            pass
 
 
 class Engine:
@@ -372,6 +404,8 @@ class Engine:
         from ultralytics.utils.checks import check_yaml
         log.info("Loading people model %s", MODEL_PATH)
         model = YOLO(MODEL_PATH)  # only this thread ever calls the model
+        import torch
+        torch.set_num_threads(int(os.getenv("INOUT_THREADS", "2")))  # the crowd model has its own process, so give the tracker a small fixed share
         tracker_args = IterableSimpleNamespace(**YAML.load(check_yaml("bytetrack.yaml")))
         while True:
             now = time.monotonic()
@@ -390,33 +424,40 @@ class Engine:
                 cam.due = time.monotonic() + 5
 
     def gates_behind(self):
-        """Gate crossings are missed below ~5 checks/s, so crowd counting yields while any gate lags."""
+        """Gate crossings are missed below ~5 checks/s, so crowd counting waits while any gate lags."""
         return any(c.cfg["role"] in TRACKING and c.status == "live" and len(c.times) > 5
                    and c.rate() < YIELD_RATIO * TRACK_FPS for c in self.cameras.values())
 
     def crowd_loop(self):
-        """Second thread, so the ~1 s fusion model never stalls gate tracking."""
-        try:
-            from crowd_model import CrowdCounter
-            counter = CrowdCounter()
-        except Exception as exc:
-            log.exception("Crowd model failed to load; density cameras will not count")
-            self.crowd_model = f"unavailable: {exc}"
-            return
-        self.crowd_model = "DM-Count + CSRNet fusion" + (" (learned head)" if counter.mode == "learned" else "")
+        """Counts crowds in a separate low-priority process, so the video and gate tracking never lag."""
+        worker = None
         while True:
-            now = time.monotonic()
-            ready = [c for c in self.cameras.values()
-                     if c.cfg["role"] in DENSITY and c.frame is not None and c.crowd_due <= now]
-            if not ready or self.gates_behind():
-                time.sleep(0.5)
-                continue
-            cam = min(ready, key=lambda c: c.crowd_due)
             try:
-                cam.count_crowd(counter)
-            except Exception:
-                log.exception("Crowd count failed for %s", cam.cfg["id"])
-                cam.crowd_due = time.monotonic() + 30
+                if worker is None or worker.poll() is not None:
+                    self.crowd_model = "loading"
+                    worker = CrowdProcess()
+                    self.crowd_model = "DM-Count + CSRNet fusion" + (" (learned head)" if worker.mode == "learned" else "")
+                now = time.monotonic()
+                ready = [c for c in self.cameras.values()
+                         if c.cfg["role"] in DENSITY and c.frame is not None and c.crowd_due <= now]
+                if not ready or self.gates_behind():
+                    time.sleep(0.5)
+                    continue
+                cam = min(ready, key=lambda c: c.crowd_due)
+                try:
+                    cam.count_crowd(worker)
+                except Exception:
+                    log.exception("Crowd count failed for %s", cam.cfg["id"])
+                    cam.crowd_due = time.monotonic() + 30
+                    worker.close()          # a failed count means a broken pipe: restart the worker
+                    worker = None
+            except Exception as exc:
+                log.exception("Crowd model unavailable; retrying in 30 s")
+                self.crowd_model = f"unavailable: {exc}"
+                if worker is not None:
+                    worker.close()
+                worker = None
+                time.sleep(30)
 
     def save(self):
         out = {"mediamtx": self.mediamtx, "thresholds": self.thresholds, "cameras": []}
@@ -502,9 +543,11 @@ def safe_redirect(target):
     return "/" if bad else target
 
 
+app.secret_key = session_key()   # set at import: Flask opens the session before any request handler runs
+
+
 @app.before_request
 def require_login():
-    app.secret_key = session_key()
     if request.path in PUBLIC_PATHS or session.get("user") == AUTH[0]:
         return None
     if request.path.startswith("/api/"):
@@ -574,7 +617,7 @@ def set_config(cam_id):
             cam.counter.set_line(updated["line"], updated["in_side"])
         if updated["role"] != cam.cfg["role"]:
             cam.tracker, cam.dets, cam.people, cam.visible, cam.due = None, [], 0, 0, 0.0
-            cam.dmap, cam.counted_at, cam.crowd_due = None, None, 0.0
+            cam.counted_at, cam.crowd_due = None, 0.0
             cam.times.clear()  # old-role rate history would trigger a false "too slow"
             cam.counter.forget_tracks()
         cam.cfg = updated
@@ -681,14 +724,15 @@ def stream(cam_id):
     def frames():
         last = -1
         while True:
+            cam.watch_until = time.monotonic() + 3        # keeps the camera decoding at VIEW_FPS while this stream is open
             if cam.frame_seq == last:
-                time.sleep(0.1)
+                time.sleep(0.02)
                 continue
             last = cam.frame_seq
             jpg = cam.render()
             if jpg:
                 yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpg + b"\r\n"
-            time.sleep(0.2)
+            time.sleep(1 / VIEW_FPS)
 
     return Response(frames(), mimetype="multipart/x-mixed-replace; boundary=frame",
                     headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})

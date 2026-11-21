@@ -207,6 +207,7 @@ function fill(d) {
   const g = d.geometry, m = v => (v == null ? "beyond horizon" : v.toFixed(1) + " m");
   $("#p-geo").textContent = g ? `Ground range ${g.near_m == null ? "outside view" : m(g.near_m)} to ${m(g.far_m)}` + (d.area_m2 ? ` · area ≈ ${d.area_m2} m²` : "") : "Calibrate to estimate coverage.";
   $("#m-title").textContent = cfg.name + (cfg.zone ? " · " + cfg.zone : "");
+  $("#m-fs-title").textContent = $("#m-title").textContent;
   showRole(cfg.role); updateLive(d);
 }
 
@@ -229,12 +230,17 @@ async function openModal(id) {
 }
 
 function closeModal() {
+  if (document.fullscreenElement) document.exitFullscreen();
+  if (pseudo) setPseudo(false);
   endDraw(); openId = null;
   $("#m-live").src = "data:,";   // drops the MJPEG connection
   $("#modal").classList.add("hidden");
 }
 $("#m-close").onclick = closeModal; $("#m-backdrop").onclick = closeModal;
-document.addEventListener("keydown", e => { if (e.key === "Escape" && openId) closeModal(); });
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape" || !openId) return;
+  if (pseudo) setPseudo(false); else closeModal();   // first Esc leaves full screen, the next closes the viewer
+});
 
 async function save() {
   const d = await api(`/api/cameras/${openId}/config`, {
@@ -349,6 +355,46 @@ async function saveLine() {
     endDraw(); msg("Count line saved. Counts continue from the current totals.");
   } catch (e) { msg(e.message); }
 }
+
+// ---------- Full screen ----------
+const videoArea = $(".full-view-body"), fsIcon = $("#m-fs-icon");
+const ICON_ENTER = "M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5", ICON_EXIT = "M3 8h5V3M21 8h-5V3M3 16h5v5M21 16h-5v5";
+let idleTimer = null;
+
+let pseudo = false;   // fallback: fill the window when the browser refuses real full screen (e.g. embedded views)
+
+function setFsState(on) {
+  fsIcon.firstElementChild.setAttribute("d", on ? ICON_EXIT : ICON_ENTER);
+  $("#m-fs").title = on ? "Exit full screen (F)" : "Full screen (F)";
+  wake();
+}
+
+function setPseudo(on) { pseudo = on; videoArea.classList.toggle("pseudo-fs", on); setFsState(on); }
+
+function toggleFullscreen() {
+  if (document.fullscreenElement) return document.exitFullscreen();
+  if (pseudo) return setPseudo(false);
+  const request = videoArea.requestFullscreen || videoArea.webkitRequestFullscreen;
+  const fallback = () => { if (!document.fullscreenElement) setPseudo(true); };
+  if (!request) return fallback();
+  try { Promise.resolve(request.call(videoArea)).catch(fallback); } catch (e) { fallback(); }
+  setTimeout(fallback, 500);   // some views accept the call but never switch
+}
+
+function wake() {            // show the controls, hide them again after 2.5 s without movement
+  videoArea.classList.remove("idle");
+  clearTimeout(idleTimer);
+  if (document.fullscreenElement || pseudo) idleTimer = setTimeout(() => videoArea.classList.add("idle"), 2500);
+}
+
+$("#m-fs").onclick = toggleFullscreen;
+$("#m-live").addEventListener("dblclick", toggleFullscreen);
+videoArea.addEventListener("mousemove", wake);
+document.addEventListener("fullscreenchange", () => setFsState(!!document.fullscreenElement));
+document.addEventListener("keydown", e => {
+  if ((e.key === "f" || e.key === "F") && openId && !e.ctrlKey && !e.metaKey && !e.altKey
+      && !["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement.tagName)) toggleFullscreen();
+});
 
 photo.addEventListener("load", drawLine);
 window.addEventListener("resize", drawLine);
