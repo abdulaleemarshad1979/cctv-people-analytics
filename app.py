@@ -28,6 +28,8 @@ from flask import Flask, Response, abort, jsonify, redirect, request, session
 from people_analytics import LineCounter, estimate_camera_geometry, estimate_height_from_person
 
 os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
+# Must be set before torch loads: otherwise its pool spins 7 busy-wait threads that starve the video decoders.
+os.environ.setdefault("OMP_NUM_THREADS", os.getenv("INOUT_THREADS", "3"))
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("analytics")
 ROOT = Path(__file__).parent
@@ -227,7 +229,7 @@ class Camera:
                 time.sleep(1 / file_fps)  # files read unthrottled otherwise
             now = time.monotonic()
             gap = 1 / VIEW_FPS if now < self.watch_until else min(0.5, 1 / FPS[role])
-            if now - last >= gap:  # decode only the frames we can use (more of them while someone watches)
+            if now - last >= gap * 0.6:  # decode only the frames we can use (more while someone watches); 0.6 because frame ticks (40 ms at 25 fps) would otherwise round the rate down
                 ok, frame = cap.retrieve()
                 if ok:
                     last = now
@@ -241,6 +243,7 @@ class Camera:
         with self.lock:
             frame, seq, role = self.frame, self.frame_seq, self.cfg["role"]
         h, w = frame.shape[:2]
+        started = time.monotonic()
         boxes = model.predict(frame, classes=[0], conf=0.12, iou=0.8, imgsz=INOUT_IMGSZ, verbose=False)[0].boxes.cpu().numpy()  # conf/iou as in Count peoplr
         now = time.monotonic()
         with self.lock:
@@ -257,7 +260,7 @@ class Camera:
             if role == "inout":
                 self.people = self.visible
             self.times.append(now)
-            self.due = now + 1 / TRACK_FPS
+            self.due = started + 1 / TRACK_FPS   # period from the start of this check, not its end: otherwise 5 fps becomes ~4
 
     def count_crowd(self, counter):
         """Crowd count from the DM-Count + CSRNet fusion model (density / both)."""
@@ -404,8 +407,10 @@ class Engine:
         from ultralytics.utils.checks import check_yaml
         log.info("Loading people model %s", MODEL_PATH)
         model = YOLO(MODEL_PATH)  # only this thread ever calls the model
+        import numpy as np
         import torch
-        torch.set_num_threads(int(os.getenv("INOUT_THREADS", "2")))  # the crowd model has its own process, so give the tracker a small fixed share
+        model.predict(np.zeros((64, 64, 3), np.uint8), imgsz=INOUT_IMGSZ, verbose=False)  # ultralytics resets torch to 7 threads on its first predict
+        torch.set_num_threads(int(os.getenv("INOUT_THREADS", "3")))  # YOLOv8n at 480 px: ~48 ms/frame on 1 thread, ~38 ms on 3; the crowd model has its own process
         tracker_args = IterableSimpleNamespace(**YAML.load(check_yaml("bytetrack.yaml")))
         while True:
             now = time.monotonic()
