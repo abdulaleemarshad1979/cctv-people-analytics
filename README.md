@@ -6,7 +6,7 @@
 curl -fsSL https://raw.githubusercontent.com/abdulaleemarshad1979/cctv-people-analytics/main/install.sh | sudo bash
 ```
 
-This installs Docker if missing, clones the repo to `/opt/cctv-people-analytics`, downloads the DM-Count and CSRNet weights (checksum-verified), and starts two containers: **MediaMTX** (RTSP hub) and the **analytics dashboard**. It prints the dashboard URL and a generated login (user `admin`; the password is in `/opt/cctv-people-analytics/.env`). The first build takes a few minutes (PyTorch). Run the same command again to update.
+This installs Docker if missing, clones the repo to `/opt/cctv-people-analytics`, downloads the DM-Count and CSRNet weights (checksum-verified), and starts two containers: **MediaMTX** (RTSP hub) and the **analytics dashboard**. It prints the dashboard URL and the login: user `admin`, password `admin123`. **Change the password** in `/opt/cctv-people-analytics/.env` (`LOGIN_PASSWORD`) and run `sudo docker compose up -d`. The first build takes a few minutes (PyTorch). Run the same command again to update.
 
 Then connect your NVR (the server must be able to reach it, e.g. over your Tailscale subnet route):
 
@@ -26,7 +26,7 @@ With 40 cameras on several NVRs, list each NVR in `nvrs.json` with its own `firs
 | Stop | `sudo docker compose down` |
 | Change port, login or tuning | edit `.env`, then `sudo docker compose up -d` |
 
-Your camera list and settings live in `config/` and weights in `weights/`; neither is overwritten by updates. The image is CPU-only. Do not expose port 5000 to the internet; keep it on your LAN/VPN (the login is HTTP Basic over plain HTTP, so put it behind HTTPS if it leaves a trusted network).
+Your camera list and settings live in `config/` and weights in `weights/`; neither is overwritten by updates. The image is CPU-only. The dashboard has a login page (cookie session, 12 h, with a Logout button); the default `admin` / `admin123` is public in this repo, so change it. Do not expose port 5000 to the internet; keep it on your LAN/VPN, and put it behind HTTPS if it leaves a trusted network.
 
 
 One dashboard for up to ~40 CCTV cameras. Each camera has a **role** and a **location**, both editable from the UI (click a tile):
@@ -63,7 +63,7 @@ python3 app.py          # http://127.0.0.1:5000
 python3 -m unittest     # 11 tests
 ```
 
-`WEB_HOST=0.0.0.0` exposes it to the network. **There is no login**; only do that on a trusted network or behind a reverse proxy that adds auth.
+`WEB_HOST=0.0.0.0` exposes it to the network. The login defaults to `admin` / `admin123` (`LOGIN_USER`, `LOGIN_PASSWORD`); change it before exposing the app.
 
 ## Configure cameras
 

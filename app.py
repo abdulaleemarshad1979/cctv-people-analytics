@@ -5,6 +5,7 @@ people per m2), "both" (tracked crossings plus density) or "off", and a location
 (inside or outside the temple/ghat) used to split the people totals. One capture thread per camera keeps only the latest frame; a single
 inference thread shares one model across all cameras and serves whichever is most overdue.
 """
+import hashlib
 import hmac
 import json
 import logging
@@ -14,11 +15,13 @@ import tempfile
 import threading
 import time
 from collections import deque
+from datetime import timedelta
 from pathlib import Path
+from urllib.parse import quote
 
 import cv2
 import numpy as np
-from flask import Flask, Response, abort, jsonify, request
+from flask import Flask, Response, abort, jsonify, redirect, request, session
 from people_analytics import LineCounter, estimate_camera_geometry, estimate_height_from_person
 
 os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
@@ -398,18 +401,60 @@ def detail(cam):
     return {**cam.stats(engine.thresholds), "config": cfg, "geometry": estimate_camera_geometry(cfg)}
 
 
-AUTH = (os.getenv("BASIC_AUTH_USER", ""), os.getenv("BASIC_AUTH_PASSWORD", ""))
+# Login: one account, a cookie session and the CCTV_MONITOR-style login page.
+AUTH = (os.getenv("LOGIN_USER", "admin"), os.getenv("LOGIN_PASSWORD", "admin123"))
+PUBLIC_PATHS = {"/login", "/logout", "/healthz", "/static/monitor/img/ap_police_logo.png"}  # logo is shown on the login page
+app.config.update(SESSION_COOKIE_NAME="analytics_session", SESSION_COOKIE_SAMESITE="Lax",
+                  PERMANENT_SESSION_LIFETIME=timedelta(hours=12))
+
+
+def session_key():
+    """Stable across restarts (so users stay logged in) and changes with the password (logging everyone out)."""
+    return os.getenv("SECRET_KEY") or hashlib.sha256(f"analytics|{AUTH[0]}|{AUTH[1]}".encode()).hexdigest()
+
+
+def safe_redirect(target):
+    """Only same-site paths: blocks open redirects such as //evil.com or https://evil.com."""
+    target = str(target or "/")
+    bad = not target.startswith("/") or target.startswith(("//", "/\\")) or "://" in target
+    return "/" if bad else target
 
 
 @app.before_request
 def require_login():
-    """HTTP Basic login when BASIC_AUTH_USER and BASIC_AUTH_PASSWORD are set (the Docker install sets them)."""
-    if not all(AUTH) or request.path == "/healthz":
+    app.secret_key = session_key()
+    if request.path in PUBLIC_PATHS or session.get("user") == AUTH[0]:
         return None
-    given = request.authorization
-    if given and hmac.compare_digest(given.username or "", AUTH[0]) and hmac.compare_digest(given.password or "", AUTH[1]):
-        return None
-    return Response("Login required", 401, {"WWW-Authenticate": 'Basic realm="CCTV Analytics"'})
+    if request.path.startswith("/api/"):
+        return jsonify(detail="Login required"), 401
+    return redirect("/login" if request.path == "/" else f"/login?redirect={quote(request.full_path.rstrip('?'))}")
+
+
+@app.get("/login")
+def login_page():
+    if session.get("user") == AUTH[0]:
+        return redirect(safe_redirect(request.args.get("redirect")))
+    return app.send_static_file("login.html")
+
+
+@app.post("/login")
+def login_submit():
+    data = request.get_json(silent=True) or {}
+    ok = (hmac.compare_digest(str(data.get("username", "")).strip(), AUTH[0])
+          & hmac.compare_digest(str(data.get("password", "")), AUTH[1]))
+    if not ok:
+        time.sleep(1)  # slows password guessing
+        return jsonify(detail="Invalid username or password."), 401
+    session.clear()
+    session["user"] = AUTH[0]
+    session.permanent = True
+    return jsonify(status="success", redirect=safe_redirect(data.get("redirect")))
+
+
+@app.route("/logout", methods=["GET", "POST"])
+def logout():
+    session.clear()
+    return redirect("/login")
 
 
 @app.get("/healthz")

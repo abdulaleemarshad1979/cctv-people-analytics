@@ -21,8 +21,8 @@ services:
     environment:
       DM_COUNT_WEIGHTS: /weights/model_nwpu.pth
       CSRNET_WEIGHTS: /weights/csrnet_shtechA.pth
-      BASIC_AUTH_USER: ${BASIC_AUTH_USER:-}
-      BASIC_AUTH_PASSWORD: ${BASIC_AUTH_PASSWORD:-}
+      LOGIN_USER: ${LOGIN_USER:-admin}
+      LOGIN_PASSWORD: ${LOGIN_PASSWORD:-admin123}
       INOUT_FPS: ${INOUT_FPS:-5}
       INOUT_IMGSZ: ${INOUT_IMGSZ:-480}
       CROWD_INTERVAL_S: ${CROWD_INTERVAL_S:-60}

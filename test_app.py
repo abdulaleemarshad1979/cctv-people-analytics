@@ -61,20 +61,27 @@ class AppTests(unittest.TestCase):
         inside = totals["locations"]["inside"]  # 35 people over two 10 m2 cameras
         self.assertEqual((inside["area_m2"], inside["density"], inside["peak_density"]), (20.0, 1.75, 3.0))
 
-    def test_login_required_when_configured(self):
+    def test_login_flow(self):
         client = app.app.test_client()
-        old = app.AUTH
+        old, app.AUTH = app.AUTH, ("admin", "admin123")
         try:
-            app.AUTH = ("admin", "s3cret")
-            self.assertEqual(client.get("/api/cameras").status_code, 401)
+            self.assertEqual(client.get("/api/cameras").status_code, 401)           # API: 401 JSON
+            self.assertEqual(client.get("/").headers["Location"], "/login")         # page: redirect to login
+            self.assertEqual(client.get("/login").status_code, 200)
             self.assertEqual(client.get("/healthz").status_code, 200)
-            good = {"Authorization": "Basic YWRtaW46czNjcmV0"}  # admin:s3cret
-            bad = {"Authorization": "Basic YWRtaW46d3Jvbmc="}   # admin:wrong
-            self.assertEqual(client.get("/healthz", headers=good).status_code, 200)
-            self.assertEqual(client.get("/nope", headers=bad).status_code, 401)
-            self.assertEqual(client.get("/nope", headers=good).status_code, 404)  # past the login
+            self.assertEqual(client.get("/static/monitor/img/cm.png").status_code, 302)  # photos need a login
+            real_sleep, app.time.sleep = app.time.sleep, lambda s: None  # skip the 1 s delay on a bad password
+            bad = client.post("/login", json={"username": "admin", "password": "nope"})
+            self.assertEqual(bad.status_code, 401)
+            self.assertEqual(client.get("/nope").status_code, 302)                  # still logged out
+            good = client.post("/login", json={"username": "admin", "password": "admin123", "redirect": "//evil.com"})
+            self.assertEqual((good.status_code, good.get_json()["redirect"]), (200, "/"))  # open redirect refused
+            self.assertEqual(client.get("/nope").status_code, 404)                  # past the login now
+            self.assertEqual(client.get("/logout").status_code, 302)
+            self.assertEqual(client.get("/api/cameras").status_code, 401)
         finally:
             app.AUTH = old
+            app.time.sleep = real_sleep
 
     def test_stats_never_expose_source(self):
         self.assertNotIn("source", cam().stats(self.thresholds))

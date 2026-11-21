@@ -43,10 +43,7 @@ done < weights.sha256
 say "Writing configuration"
 if [ ! -f .env ]; then
   cp .env.example .env
-  password="$(head -c 18 /dev/urandom | base64 | tr -d '/+=' | head -c 16)"
-  sed -i "s/^BASIC_AUTH_PASSWORD=.*/BASIC_AUTH_PASSWORD=$password/" .env
   chmod 600 .env
-  NEW_LOGIN=1
 fi
 [ -f config/mediamtx.yml ] || cp mediamtx/mediamtx.example.yml config/mediamtx.yml
 [ -f config/nvrs.json ] || cp nvrs.example.json config/nvrs.json
@@ -60,9 +57,7 @@ port="$(sed -n 's/^WEB_PORT=\([0-9]*\).*/\1/p' .env | head -1)"
 host="$(hostname -I 2>/dev/null | awk '{print $1}')"
 say "Done"
 echo "Dashboard: http://${host:-<server-ip>}:${port:-5000}"
-if [ "${NEW_LOGIN:-0}" = 1 ]; then
-  echo "Login:     $(sed -n 's/^BASIC_AUTH_USER=\([^ #]*\).*/\1/p' .env)  /  $(sed -n 's/^BASIC_AUTH_PASSWORD=\([^ #]*\).*/\1/p' .env)   (stored in $DIR/.env)"
-fi
+echo "Login:     $(sed -n 's/^LOGIN_USER=\([^ #]*\).*/\1/p' .env) / $(sed -n 's/^LOGIN_PASSWORD=\([^ #]*\).*/\1/p' .env)   (change it in $DIR/.env, then: docker compose up -d)"
 echo
 echo "Next: put your NVR details in $DIR/config/nvrs.json, then run:"
 echo "  cd $DIR && python3 scripts/gen_mediamtx.py && docker compose restart mediamtx"

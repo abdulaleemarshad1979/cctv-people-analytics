@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>People Counting &amp; Crowd Density - Login</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root {
+      --bg-gradient-start: #0b1120;
+      --bg-gradient-end: #0f172a;
+      --card-bg: rgba(30, 41, 59, 0.95);
+      --accent-blue: #0284c7;
+      --accent-hover: #0369a1;
+      --accent-emerald: #10b981;
+      --accent-purple: #8b5cf6;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --border-color: #334155;
+      --error-red: #ef4444;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      min-height: 100vh;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      background: radial-gradient(circle at top left, #1e293b, #0b1120 85%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      color: var(--text-main);
+    }
+
+    .login-card {
+      width: 100%;
+      max-width: 460px;
+      background: var(--card-bg);
+      border-radius: 16px;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
+      overflow: hidden;
+      backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .login-header {
+      background: #0f172a;
+      padding: 28px 24px 20px;
+      text-align: center;
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-logo {
+      height: 64px;
+      width: auto;
+      object-fit: contain;
+      filter: drop-shadow(0 4px 6px rgba(0,0,0,0.3));
+    }
+
+    .brand-title {
+      font-size: 17px;
+      font-weight: 800;
+      color: #38bdf8;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      line-height: 1.2;
+    }
+
+    .brand-subtitle {
+      font-size: 13px;
+      font-weight: 600;
+      color: #94a3b8;
+      margin-top: 2px;
+    }
+
+    /* Role Selection Tabs */
+    .role-tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      padding: 6px;
+      margin: 20px 24px 0;
+      background: #0f172a;
+      border-radius: 10px;
+      border: 1px solid var(--border-color);
+      gap: 6px;
+    }
+
+    .role-tab {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 13px;
+      font-weight: 700;
+      padding: 10px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: all 0.2s ease;
+    }
+
+    .role-tab:hover {
+      color: #ffffff;
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .role-tab.active {
+      background: var(--accent-blue);
+      color: #ffffff;
+      box-shadow: 0 2px 8px rgba(2, 132, 199, 0.4);
+    }
+
+    .role-tab.active.admin-tab {
+      background: linear-gradient(135deg, #0284c7, #6366f1);
+    }
+
+    .login-body {
+      padding: 24px 28px 28px;
+    }
+
+    .role-badge-container {
+      margin-bottom: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      border-radius: 8px;
+      background: rgba(2, 132, 199, 0.1);
+      border: 1px solid rgba(2, 132, 199, 0.25);
+    }
+
+    .role-badge-label {
+      font-size: 12px;
+      font-weight: 700;
+      color: #38bdf8;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .role-badge-desc {
+      font-size: 11px;
+      color: #94a3b8;
+    }
+
+    .login-form {
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .form-label {
+      font-size: 12px;
+      font-weight: 700;
+      color: #cbd5e1;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .form-input {
+      width: 100%;
+      padding: 12px 16px;
+      font-size: 14px;
+      border-radius: 8px;
+      border: 1px solid var(--border-color);
+      background: #0f172a;
+      color: #f8fafc;
+      outline: none;
+      transition: all 0.2s ease;
+    }
+
+    .form-input:focus {
+      border-color: #38bdf8;
+      box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.2);
+    }
+
+    .password-wrapper {
+      position: relative;
+      display: flex;
+      align-items: center;
+      width: 100%;
+    }
+
+    .password-wrapper .form-input {
+      padding-right: 80px;
+    }
+
+    .password-toggle-btn {
+      position: absolute;
+      right: 8px;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: #94a3b8;
+      font-size: 11.5px;
+      font-weight: 700;
+      padding: 5px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      transition: all 0.2s ease;
+      user-select: none;
+    }
+
+    .password-toggle-btn:hover {
+      background: rgba(56, 189, 248, 0.18);
+      color: #38bdf8;
+      border-color: rgba(56, 189, 248, 0.4);
+    }
+
+    .error-alert {
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.35);
+      color: #fca5a5;
+      padding: 12px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      display: none;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .submit-btn {
+      width: 100%;
+      background: var(--accent-blue);
+      color: #ffffff;
+      border: none;
+      padding: 14px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: background 0.2s ease, transform 0.1s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      box-shadow: 0 4px 12px rgba(2, 132, 199, 0.35);
+      margin-top: 4px;
+    }
+
+    .submit-btn:hover {
+      background: var(--accent-hover);
+    }
+
+    .submit-btn:active {
+      transform: scale(0.99);
+    }
+
+    .login-footer {
+      padding: 16px 24px;
+      text-align: center;
+      font-size: 11px;
+      color: #64748b;
+      border-top: 1px solid var(--border-color);
+      background: #0f172a;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .powered-by {
+      font-size: 12px;
+      font-weight: 600;
+      color: #94a3b8;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .powered-by span {
+      font-weight: 800;
+      color: #38bdf8;
+      letter-spacing: 0.2px;
+    }
+  </style>
+</head>
+<body>
+  <div class="login-card">
+    <div class="login-header">
+      <img src="/static/monitor/img/ap_police_logo.png" alt="AP Police Logo" class="brand-logo">
+      <div>
+        <h1 class="brand-title">Andhra Pradesh Police Department</h1>
+        <div class="brand-subtitle" id="headerSubtitle">CCTV People Counting &amp; Crowd Density Analytics</div>
+      </div>
+    </div>
+
+    <div class="login-body">
+      <form id="loginForm" class="login-form" method="POST" action="/login">
+        <div id="errorAlert" class="error-alert">
+          <svg style="width: 20px; height: 20px; flex-shrink: 0;" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+          </svg>
+          <span id="errorMessage">Invalid username or password</span>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="username">Username</label>
+          <input type="text" id="username" name="username" class="form-input" placeholder="Enter username" required autofocus autocomplete="username">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="password">Password</label>
+          <div class="password-wrapper">
+            <input type="password" id="password" name="password" class="form-input" placeholder="Enter password" required autocomplete="current-password">
+            <button type="button" id="togglePasswordBtn" class="password-toggle-btn" onclick="togglePasswordVisibility()" aria-label="Toggle password visibility">
+              <span id="passwordToggleText">Show</span>
+              <svg id="eyeIcon" style="width: 15px; height: 15px;" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <button type="submit" class="submit-btn" id="submitBtn">
+          <span id="submitBtnText">Sign In</span>
+          <svg style="width: 16px; height: 16px;" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3" />
+          </svg>
+        </button>
+      </form>
+    </div>
+
+    <div class="login-footer">
+      <div>Andhra Pradesh Police Department &bull; People Counting &amp; Crowd Density Portal</div>
+    </div>
+  </div>
+
+  <script>
+    const urlParams = new URLSearchParams(window.location.search);
+    const redirectParam = urlParams.get("redirect") || "/";
+    const alertEl = document.getElementById("errorAlert");
+    const msgEl = document.getElementById("errorMessage");
+    if (urlParams.get("error") === "expired") { msgEl.textContent = "Session expired. Please log in again."; alertEl.style.display = "flex"; }
+
+    function togglePasswordVisibility() {
+      const pwd = document.getElementById("password");
+      const toggleText = document.getElementById("passwordToggleText");
+      pwd.type = pwd.type === "password" ? "text" : "password";
+      toggleText.textContent = pwd.type === "password" ? "Show" : "Hide";
+    }
+
+    document.getElementById("loginForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const form = e.target, btn = document.getElementById("submitBtn");
+      alertEl.style.display = "none"; btn.disabled = true;
+      try {
+        const res = await fetch("/login", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: form.username.value.trim(), password: form.password.value, redirect: redirectParam })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) { window.location.href = data.redirect || "/"; return; }
+        msgEl.textContent = data.detail || "Invalid username or password.";
+      } catch (err) {
+        msgEl.textContent = "Connection error. Please try again.";
+      }
+      alertEl.style.display = "flex"; btn.disabled = false;
+    });
+  </script>
+</body>
+</html>
