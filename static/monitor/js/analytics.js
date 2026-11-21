@@ -173,7 +173,8 @@ function updateLive(c) {
   const slow = tracks(c) && c.status === "live" && c.fps < 0.8 * c.target_fps;
   const parts = [];
   if (tracks(c)) parts.push(`Tracking ${c.fps}/s (target ${c.target_fps}/s)` + (slow ? " – too slow, crossings may be missed" : ""));
-  if (dense(c)) parts.push(c.counted_ago == null ? "Crowd count pending" : `Crowd count ${c.counted_ago} s ago`);
+  if (dense(c)) parts.push(c.counted_ago == null ? "Crowd count pending" : `Crowd count ${c.counted_ago} s ago`,
+    `detector ${c.detected ?? "–"} · crowd model ${c.crowd_model_count ?? "–"}`);
   $("#p-rate").textContent = parts.join(" · ");
   $("#p-rate").style.color = slow ? "#fbbf24" : "#94a3b8";
   const rows = c.role === "inout" ? [["In", c.in], ["Out", c.out], ["Visible", c.people]]

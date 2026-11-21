@@ -58,7 +58,7 @@ VIEW_FPS = float(os.getenv("VIEW_FPS", "12"))        # video smoothness while a 
 # <= 2x that, the detector's count is shown. Otherwise the crowd model's, never below what the detector sees.
 SPARSE_MAX = int(os.getenv("SPARSE_MAX", "10"))
 DETECT_INTERVAL = float(os.getenv("DETECT_INTERVAL_S", "30"))   # detector count per density camera; every 2 s while someone watches it
-COUNT_CONF = float(os.getenv("YOLO_COUNT_CONFIDENCE", "0.30"))
+COUNT_CONF = float(os.getenv("YOLO_COUNT_CONFIDENCE", "0.40"))   # CCTV_MONITOR uses 0.30, but on a close-up camera a faint 0.28 box counted one person as 2
 FPS = {"inout": TRACK_FPS, "both": TRACK_FPS, "density": 1 / CROWD_INTERVAL}
 ROLES = ("inout", "density", "both", "off")
 LOCATIONS = ("inside", "outside")
@@ -334,6 +334,9 @@ class Camera:
             cfg, people, status = self.cfg, self.people, self.status
             counts = self.counter.counts()
         counted_at, visible = self.counted_at, self.visible
+        with self.lock:
+            detected = self.detector_count()
+            crowd_total = self.crowd_total
         out = {"id": cfg["id"], "name": cfg["name"], "zone": cfg["zone"], "location": cfg["location"], "role": cfg["role"],
                "status": status, "people": people, "visible": visible, "fps": self.rate(),
                "target_fps": TRACK_FPS if cfg["role"] in TRACKING else 0}
@@ -346,7 +349,8 @@ class Camera:
                 "critical" if density >= thresholds["critical"] else
                 "warning" if density >= thresholds["warning"] else "safe")
             out.update(area_m2=round(area, 1) if area else None, density=density, level=level,
-                       counted_ago=None if counted_at is None else round(time.monotonic() - counted_at))
+                       counted_ago=None if counted_at is None else round(time.monotonic() - counted_at),
+                       detected=detected, crowd_model_count=None if crowd_total is None else round(crowd_total, 1))
         return out
 
     def render(self, width=None):
