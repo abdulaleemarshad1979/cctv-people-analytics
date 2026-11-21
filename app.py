@@ -29,22 +29,36 @@ from people_analytics import LineCounter, estimate_camera_geometry, estimate_hei
 
 os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
 # Must be set before torch loads: otherwise its pool spins 7 busy-wait threads that starve the video decoders.
-os.environ.setdefault("OMP_NUM_THREADS", os.getenv("INOUT_THREADS", "3"))
+# Every detector / crowd worker runs on one torch thread (the most CPU-efficient size); throughput comes from more workers.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("analytics")
 ROOT = Path(__file__).parent
 app = Flask(__name__, static_folder=str(ROOT / "static"))
 CONFIG_PATH = Path(os.getenv("ANALYTICS_CONFIG", str(ROOT / "cameras.json")))
 MODEL_PATH = os.getenv("PEOPLE_MODEL", str(ROOT / "yolov8n.pt"))
-INOUT_IMGSZ = int(os.getenv("INOUT_IMGSZ", "480"))
+INOUT_IMGSZ = int(os.getenv("INOUT_IMGSZ", "640"))   # detector size: native resolution for a 640x360 sub-stream
 # Crossing tracker (YOLO + ByteTrack): drops crossings below ~5 checks/s (measured on a walker
-# crossing 10 % of the frame per second). Crowd count (DM-Count + CSRNet fusion, ~1 s per frame on
-# this CPU): one count per camera every CROWD_INTERVAL_S seconds.
-TRACK_FPS = float(os.getenv("INOUT_FPS", "5"))
-CROWD_INTERVAL = float(os.getenv("CROWD_INTERVAL_S", "60"))
-YIELD_RATIO = float(os.getenv("GATE_YIELD_RATIO", "0.8"))  # crowd counting pauses while a gate runs below this share of its target
+# crossing 10 % of the frame per second). Crowd count (DM-Count + CSRNet fusion, ~2.9 core-seconds per frame):
+# one count per density camera every CROWD_INTERVAL_S seconds.
+# This server is dedicated to the cameras, so the cores are split between the two kinds of work by core count
+# (override with INOUT_WORKERS / CROWD_WORKERS): detector workers ~35 % (~28 checks/s each), crowd workers ~25 %
+# (each counts 1 camera per ~3 s, so N density cameras every 30 s need about N / 10 workers), the rest decodes video and serves the web.
+CORES = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 4)
+INOUT_WORKERS = int(os.getenv("INOUT_WORKERS") or max(1, round(CORES * 0.35)))   # empty = auto (docker compose passes blanks)
+CROWD_WORKERS = int(os.getenv("CROWD_WORKERS") or max(1, round(CORES * 0.25)))
+TRACK_FPS = float(os.getenv("INOUT_FPS", "10"))
+CROWD_INTERVAL = float(os.getenv("CROWD_INTERVAL_S", "30"))
 SHOW_BOXES = os.getenv("SHOW_BOXES", "0") == "1"   # boxes and track ids on the video; off by default (cleaner, cheaper)
+VIEW_WIDTH = int(os.getenv("VIEW_WIDTH", "1280"))   # live viewer JPEG width and quality
+VIEW_QUALITY = int(os.getenv("VIEW_QUALITY", "85"))
 VIEW_FPS = float(os.getenv("VIEW_FPS", "12"))        # video smoothness while a camera is open in the viewer
+# Same detector settings as CCTV_MONITOR (conf 0.30, iou 0.55, agnostic NMS). The crowd model counts every density camera
+# every CROWD_INTERVAL; it reads a lone person as 1.5-4, so while the detector sees <= SPARSE_MAX people and the crowd model
+# <= 2x that, the detector's count is shown. Otherwise the crowd model's, never below what the detector sees.
+SPARSE_MAX = int(os.getenv("SPARSE_MAX", "10"))
+DETECT_INTERVAL = float(os.getenv("DETECT_INTERVAL_S", "30"))   # detector count per density camera; every 2 s while someone watches it
+COUNT_CONF = float(os.getenv("YOLO_COUNT_CONFIDENCE", "0.30"))
 FPS = {"inout": TRACK_FPS, "both": TRACK_FPS, "density": 1 / CROWD_INTERVAL}
 ROLES = ("inout", "density", "both", "off")
 LOCATIONS = ("inside", "outside")
@@ -164,7 +178,10 @@ class Camera:
         self.frame_seq = self.infer_seq = 0
         self.dets, self.people, self.visible = [], 0, 0   # people = crowd count (tracked count for inout)
         self.status = "starting"
-        self.due = self.crowd_due = 0.0
+        self.due = self.crowd_due = self.detect_due = 0.0
+        self.yolo_n = self.crowd_total = None   # latest detector count / crowd-model count; people is chosen from them
+        self.yolo_at = 0.0
+        self.busy = self.crowd_busy = False     # a worker is handling this camera; stops two workers racing on one tracker
         self.times = deque(maxlen=20)
         self.crowd_seq, self.counted_at, self.watch_until = 0, None, 0.0   # watch_until: someone is viewing this camera
 
@@ -262,6 +279,36 @@ class Camera:
             self.times.append(now)
             self.due = started + 1 / TRACK_FPS   # period from the start of this check, not its end: otherwise 5 fps becomes ~4
 
+    def detector_count(self):
+        """Caller holds the lock. The detector's count, or None when it is too old to trust over the crowd model."""
+        return self.yolo_n if time.monotonic() - self.yolo_at < 3 * DETECT_INTERVAL + 5 else None
+
+    def crowded(self):
+        """Caller holds the lock. A far-off crowd the detector mostly misses still counts, via the crowd model's total."""
+        return (self.detector_count() or 0) > SPARSE_MAX or (self.crowd_total or 0) > 2 * SPARSE_MAX
+
+    def choose_people(self):
+        """Caller holds the lock. Few people: trust the detector. Many: the crowd model (the detector misses people in dense crowds)."""
+        seen = self.detector_count()
+        if self.crowded():
+            self.people = max(round(self.crowd_total or 0), seen or 0)
+        else:
+            self.people = seen if seen is not None else round(self.crowd_total or 0)
+
+    def detect(self, model):
+        """Person-detector head count for density / both cameras."""
+        with self.lock:
+            frame, seq, role = self.frame, self.frame_seq, self.cfg["role"]
+        # iou/agnostic stated: ultralytics keeps the tracker call's iou=0.8, which keeps duplicate boxes (one person counted twice)
+        n = len(model.predict(frame, classes=[0], conf=COUNT_CONF, iou=0.55, agnostic_nms=True, max_det=3000, imgsz=640, verbose=False)[0].boxes)
+        now = time.monotonic()
+        with self.lock:
+            if self.cfg["role"] != role:
+                return
+            self.yolo_n, self.yolo_at = n, now
+            self.choose_people()
+            self.detect_due = now + (2 if now < self.watch_until else DETECT_INTERVAL)
+
     def count_crowd(self, counter):
         """Crowd count from the DM-Count + CSRNet fusion model (density / both)."""
         with self.lock:
@@ -272,7 +319,8 @@ class Camera:
             if self.cfg["role"] != role:
                 return
             self.crowd_seq, self.counted_at = seq, now
-            self.people = round(total)
+            self.crowd_total = total
+            self.choose_people()
             self.crowd_due = now + CROWD_INTERVAL
 
     # ---- views ---------------------------------------------------------------------
@@ -331,7 +379,7 @@ class Camera:
         cv2.putText(frame, label, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         if width and width < w:
             frame = cv2.resize(frame, (width, round(h * width / w)), interpolation=cv2.INTER_AREA)
-        ok, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 72])
+        ok, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, VIEW_QUALITY])
         return jpg.tobytes() if ok else None
 
     def snapshot(self):
@@ -398,71 +446,102 @@ class Engine:
     def start(self):
         for cam in self.cameras.values():
             threading.Thread(target=cam.capture, name=f"cap-{cam.cfg['id']}", daemon=True).start()
-        threading.Thread(target=self.infer_loop, name="inference", daemon=True).start()
-        threading.Thread(target=self.crowd_loop, name="crowd", daemon=True).start()
+        self.pick_lock = threading.Lock()
+        log.info("%d cores: %d detector workers, %d crowd workers", CORES, INOUT_WORKERS, CROWD_WORKERS)
+        for k in range(INOUT_WORKERS):
+            threading.Thread(target=self.infer_loop, name=f"inference-{k}", daemon=True).start()
+        for k in range(CROWD_WORKERS):
+            threading.Thread(target=self.crowd_loop, name=f"crowd-{k}", daemon=True).start()
+
+    def pick_detector_job(self):
+        """Next (kind, camera) for a detector worker, marked busy. Overdue head counts go first so they are never starved by gates."""
+        now = time.monotonic()
+        with self.pick_lock:
+            cams = [c for c in self.cameras.values() if not c.busy and c.frame is not None]
+            heads = [c for c in cams if c.cfg["role"] in DENSITY and c.detect_due <= now]
+            gates = [c for c in cams if c.cfg["role"] in TRACKING and c.frame_seq != c.infer_seq and c.due <= now]
+            late = [c for c in heads if now - c.detect_due > 5]
+            if late:
+                job = ("count", min(late, key=lambda c: c.detect_due))
+            elif gates:
+                job = ("gate", min(gates, key=lambda c: c.due))
+            elif heads:
+                job = ("count", min(heads, key=lambda c: c.detect_due))
+            else:
+                return None
+            job[1].busy = True
+            return job
 
     def infer_loop(self):
         from ultralytics import YOLO
         from ultralytics.utils import IterableSimpleNamespace, YAML
         from ultralytics.utils.checks import check_yaml
         log.info("Loading people model %s", MODEL_PATH)
-        model = YOLO(MODEL_PATH)  # only this thread ever calls the model
+        model = YOLO(MODEL_PATH)  # one model per worker thread: ultralytics predictors are not thread-safe
         import numpy as np
         import torch
         model.predict(np.zeros((64, 64, 3), np.uint8), imgsz=INOUT_IMGSZ, verbose=False)  # ultralytics resets torch to 7 threads on its first predict
-        torch.set_num_threads(int(os.getenv("INOUT_THREADS", "3")))  # YOLOv8n at 480 px: ~48 ms/frame on 1 thread, ~38 ms on 3; the crowd model has its own process
+        torch.set_num_threads(1)  # per thread: 1 thread = ~48 ms/frame at 480 px, and the workers share the cores
         tracker_args = IterableSimpleNamespace(**YAML.load(check_yaml("bytetrack.yaml")))
         while True:
-            now = time.monotonic()
-            ready = [c for c in self.cameras.values()
-                     if c.cfg["role"] in TRACKING and c.frame is not None
-                     and c.frame_seq != c.infer_seq and c.due <= now]
-            if not ready:
+            job = self.pick_detector_job()
+            if job is None:
                 time.sleep(0.02)
                 continue
-            cam = min(ready, key=lambda c: c.due)
+            kind, cam = job
             try:
-                cam.infer(model, tracker_args)
-                self.rate_times.append(time.monotonic())
+                if kind == "gate":
+                    cam.infer(model, tracker_args)
+                    self.rate_times.append(time.monotonic())
+                else:
+                    cam.detect(model)
             except Exception:
-                log.exception("Inference failed for %s", cam.cfg["id"])
-                cam.due = time.monotonic() + 5
+                log.exception("%s failed for %s", "Inference" if kind == "gate" else "Head count", cam.cfg["id"])
+                if kind == "gate":
+                    cam.due = time.monotonic() + 5
+                else:
+                    cam.detect_due = time.monotonic() + 30
+            finally:
+                cam.busy = False
 
-    def gates_behind(self):
-        """Gate crossings are missed below ~5 checks/s, so crowd counting waits while any gate lags."""
-        return any(c.cfg["role"] in TRACKING and c.status == "live" and len(c.times) > 5
-                   and c.rate() < YIELD_RATIO * TRACK_FPS for c in self.cameras.values())
+    def pick_crowd_job(self):
+        now = time.monotonic()
+        with self.pick_lock:
+            ready = [c for c in self.cameras.values()
+                     if c.cfg["role"] in DENSITY and c.frame is not None and c.crowd_due <= now and not c.crowd_busy]
+            if not ready:
+                return None
+            cam = min(ready, key=lambda c: c.crowd_due)
+            cam.crowd_busy = True
+            return cam
 
     def crowd_loop(self):
-        """Counts crowds in a separate low-priority process, so the video and gate tracking never lag."""
+        """Counts crowds in its own low-priority process (one per worker), so the video and gate tracking never lag."""
         worker = None
         while True:
+            cam = None
             try:
                 if worker is None or worker.poll() is not None:
-                    self.crowd_model = "loading"
                     worker = CrowdProcess()
                     self.crowd_model = "DM-Count + CSRNet fusion" + (" (learned head)" if worker.mode == "learned" else "")
-                now = time.monotonic()
-                ready = [c for c in self.cameras.values()
-                         if c.cfg["role"] in DENSITY and c.frame is not None and c.crowd_due <= now]
-                if not ready or self.gates_behind():
+                cam = self.pick_crowd_job()
+                if cam is None:
                     time.sleep(0.5)
                     continue
-                cam = min(ready, key=lambda c: c.crowd_due)
-                try:
-                    cam.count_crowd(worker)
-                except Exception:
-                    log.exception("Crowd count failed for %s", cam.cfg["id"])
-                    cam.crowd_due = time.monotonic() + 30
-                    worker.close()          # a failed count means a broken pipe: restart the worker
-                    worker = None
+                cam.count_crowd(worker)
             except Exception as exc:
-                log.exception("Crowd model unavailable; retrying in 30 s")
-                self.crowd_model = f"unavailable: {exc}"
+                log.exception("Crowd count failed%s", f" for {cam.cfg['id']}" if cam else "")
+                if cam is not None:
+                    cam.crowd_due = time.monotonic() + 30
+                else:
+                    self.crowd_model = f"unavailable: {exc}"
                 if worker is not None:
-                    worker.close()
+                    worker.close()          # a failed count means a broken pipe: restart the worker
                 worker = None
-                time.sleep(30)
+                time.sleep(5 if cam is not None else 30)
+            finally:
+                if cam is not None:
+                    cam.crowd_busy = False
 
     def save(self):
         out = {"mediamtx": self.mediamtx, "thresholds": self.thresholds, "cameras": []}
@@ -622,7 +701,8 @@ def set_config(cam_id):
             cam.counter.set_line(updated["line"], updated["in_side"])
         if updated["role"] != cam.cfg["role"]:
             cam.tracker, cam.dets, cam.people, cam.visible, cam.due = None, [], 0, 0, 0.0
-            cam.counted_at, cam.crowd_due = None, 0.0
+            cam.counted_at, cam.crowd_due, cam.detect_due = None, 0.0, 0.0
+            cam.yolo_n = cam.crowd_total = None
             cam.times.clear()  # old-role rate history would trigger a false "too slow"
             cam.counter.forget_tracks()
         cam.cfg = updated
@@ -728,13 +808,14 @@ def stream(cam_id):
 
     def frames():
         last = -1
+        cam.detect_due = 0.0   # count right away when the viewer opens
         while True:
             cam.watch_until = time.monotonic() + 3        # keeps the camera decoding at VIEW_FPS while this stream is open
             if cam.frame_seq == last:
                 time.sleep(0.02)
                 continue
             last = cam.frame_seq
-            jpg = cam.render()
+            jpg = cam.render(VIEW_WIDTH)
             if jpg:
                 yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpg + b"\r\n"
             time.sleep(1 / VIEW_FPS)

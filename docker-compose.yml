@@ -23,10 +23,12 @@ services:
       CSRNET_WEIGHTS: /weights/csrnet_shtechA.pth
       LOGIN_USER: ${LOGIN_USER:-admin}
       LOGIN_PASSWORD: ${LOGIN_PASSWORD:-admin123}
-      INOUT_FPS: ${INOUT_FPS:-5}
-      INOUT_IMGSZ: ${INOUT_IMGSZ:-480}
-      CROWD_INTERVAL_S: ${CROWD_INTERVAL_S:-60}
-      GATE_YIELD_RATIO: ${GATE_YIELD_RATIO:-0.8}
+      INOUT_FPS: ${INOUT_FPS:-10}
+      INOUT_IMGSZ: ${INOUT_IMGSZ:-640}
+      CROWD_INTERVAL_S: ${CROWD_INTERVAL_S:-30}
+      DETECT_INTERVAL_S: ${DETECT_INTERVAL_S:-30}
+      INOUT_WORKERS: ${INOUT_WORKERS:-}     # blank = by core count
+      CROWD_WORKERS: ${CROWD_WORKERS:-}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:5000/healthz', timeout=4)"]
       interval: 30s

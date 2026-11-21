@@ -8,7 +8,7 @@ import os
 import sys
 
 os.nice(10)
-os.environ.setdefault("CROWD_THREADS", "2")   # leaves cores for the website and gate tracking                                   # the website and gate tracking always win the CPU
+os.environ.setdefault("CROWD_THREADS", "1")   # one torch thread per worker is the most CPU-efficient; the parent runs several workers
 out = sys.stdout.buffer
 sys.stdout = sys.stderr                       # model loaders print(); keep stdout for the protocol only
 

@@ -23,6 +23,22 @@ class AppTests(unittest.TestCase):
             c.people = people
             self.assertEqual(c.stats(self.thresholds)["level"], level)
 
+    def test_sparse_scene_uses_detector_dense_uses_crowd_model(self):
+        c = cam(role="density")
+        c.crowd_total = 1.5            # crowd model reads one person as 1.5
+        c.yolo_n, c.yolo_at = 1, app.time.monotonic()
+        c.choose_people()
+        self.assertEqual(c.people, 1)
+        c.yolo_n, c.crowd_total = app.SPARSE_MAX + 5, 140.4
+        c.choose_people()
+        self.assertEqual(c.people, 140)
+        c.yolo_n, c.crowd_total = 3, 150.0   # far-off crowd the detector mostly misses
+        c.choose_people()
+        self.assertEqual(c.people, 150)
+        c.yolo_n, c.crowd_total, c.yolo_at = 1, 1.5, 0.0   # detector count too old to trust: the fresh crowd total is shown
+        c.choose_people()
+        self.assertEqual(c.people, 2)
+
     def test_density_unknown_without_area_or_height(self):
         stats = cam().stats(self.thresholds)
         self.assertIsNone(stats["density"])
