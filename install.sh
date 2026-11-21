@@ -57,7 +57,7 @@ port="$(sed -n 's/^WEB_PORT=\([0-9]*\).*/\1/p' .env | head -1)"
 host="$(hostname -I 2>/dev/null | awk '{print $1}')"
 say "Done"
 echo "Dashboard: http://${host:-<server-ip>}:${port:-5000}"
-echo "Login:     $(sed -n 's/^LOGIN_USER=\([^ #]*\).*/\1/p' .env) / $(sed -n 's/^LOGIN_PASSWORD=\([^ #]*\).*/\1/p' .env)   (change it in $DIR/.env, then: docker compose up -d)"
+echo "Login:     $(sed -n 's/^LOGIN_USER=\([^ #]*\).*/\1/p' .env) / $(sed -n "s/^LOGIN_PASSWORD=\(.*\)/\1/p" .env | tr -d "'")   (change it: sudo $DIR/scripts/set-password.sh)"
 echo
 echo "Next: put your NVR details in $DIR/config/nvrs.json, then run:"
 echo "  cd $DIR && python3 scripts/gen_mediamtx.py && docker compose restart mediamtx"

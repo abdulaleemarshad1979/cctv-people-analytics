@@ -6,7 +6,7 @@
 curl -fsSL https://raw.githubusercontent.com/abdulaleemarshad1979/cctv-people-analytics/main/install.sh | sudo bash
 ```
 
-This installs Docker if missing, clones the repo to `/opt/cctv-people-analytics`, downloads the DM-Count and CSRNet weights (checksum-verified), and starts two containers: **MediaMTX** (RTSP hub) and the **analytics dashboard**. It prints the dashboard URL and the login: user `admin`, password `admin123`. **Change the password** in `/opt/cctv-people-analytics/.env` (`LOGIN_PASSWORD`) and run `sudo docker compose up -d`. The first build takes a few minutes (PyTorch). Run the same command again to update.
+This installs Docker if missing, clones the repo to `/opt/cctv-people-analytics`, downloads the DM-Count and CSRNet weights (checksum-verified), and starts two containers: **MediaMTX** (RTSP hub) and the **analytics dashboard**. It prints the dashboard URL and the login: user `admin`, password `admin123`. **Change the password** with `sudo /opt/cctv-people-analytics/scripts/set-password.sh` (asks for the new one) or `sudo /opt/cctv-people-analytics/scripts/set-password.sh 'NewPassword'`. The first build takes a few minutes (PyTorch). Run the same command again to update.
 
 Then connect your NVR (the server must be able to reach it, e.g. over your Tailscale subnet route):
 
