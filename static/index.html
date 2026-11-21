@@ -47,6 +47,7 @@
         <select class="zone-select" id="zone" aria-label="Zone"><option value="">All zones</option></select>
       </div>
       <div class="nav-right-group"><span class="infer-chip" id="infer">Connecting…</span>
+        <button class="pill connect-btn" id="open-sources" type="button">Connect cameras</button>
         <a href="/logout" class="logout-btn" title="Sign Out"><span>Logout</span>
           <svg style="width:14px;height:14px" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg></a></div>
     </div>
@@ -80,6 +81,43 @@
           <div id="m-stage"><img id="m-photo" alt="Camera snapshot"><svg id="m-overlay" viewBox="0 0 100 100" preserveAspectRatio="none"></svg></div>
         </div>
         <aside class="panel" id="m-panel"></aside>
+      </div>
+    </div>
+  </div>
+
+
+  <div class="full-view-modal hidden" id="src-modal" role="dialog" aria-modal="true" aria-labelledby="src-title">
+    <div class="full-view-backdrop" id="src-backdrop"></div>
+    <div class="full-view-content">
+      <div class="full-view-header">
+        <div class="full-view-title-group"><span class="full-view-badge">Cameras</span><h2 class="full-view-title" id="src-title">Connect cameras</h2></div>
+        <button class="full-view-close-btn" id="src-close" aria-label="Close">✕</button>
+      </div>
+      <div class="src-body">
+        <section class="bulk">
+          <h3>Fill many cameras from one NVR</h3>
+          <div class="bulk-grid">
+            <label>Type<select id="b-preset"><option value="dahua">CP PLUS / Dahua NVR</option><option value="hik">Hikvision NVR</option><option value="custom">Custom path</option></select></label>
+            <label>NVR IP address<input id="b-host" placeholder="192.168.1.10" autocomplete="off"></label>
+            <label>Port<input id="b-port" type="number" value="554"></label>
+            <label>Username<input id="b-user" autocomplete="off"></label>
+            <label>Password<input id="b-pass" type="password" autocomplete="new-password"></label>
+            <label>First camera<select id="b-from"></select></label>
+            <label>Number of cameras<input id="b-count" type="number" min="1" max="64" value="12"></label>
+            <label>First NVR channel<input id="b-ch" type="number" min="1" value="1"></label>
+            <label>Stream<select id="b-stream"><option value="sub">Sub-stream (recommended)</option><option value="main">Main stream</option></select></label>
+            <label id="b-custom-wrap" class="hidden">Path ({ch} = channel)<input id="b-custom" value="/stream{ch}"></label>
+          </div>
+          <button class="btn" id="b-apply" type="button">Fill the table below</button>
+          <span class="hint">Camera 1 gets channel 1, camera 2 gets channel 2, and so on. Nothing is saved until you press Save.</span>
+        </section>
+        <div class="src-table-wrap">
+          <table id="src-table">
+            <thead><tr><th>Camera</th><th>IP / host</th><th>Port</th><th>Username</th><th>Password</th><th>Stream path</th><th>Check</th></tr></thead>
+            <tbody id="src-rows"></tbody>
+          </table>
+        </div>
+        <div class="src-footer"><span id="src-msg"></span><button class="btn" id="src-save" type="button">Save all changes</button></div>
       </div>
     </div>
   </div>

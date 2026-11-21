@@ -83,6 +83,39 @@ class AppTests(unittest.TestCase):
             app.AUTH = old
             app.time.sleep = real_sleep
 
+    def test_connection_validation_and_url(self):
+        conn = app.validated_connection({"host": "192.168.1.10", "user": "admin", "password": "p@ss/#", "path": "/ch1"})
+        self.assertEqual(app.connection_url(conn), "rtsp://admin:p%40ss%2F%23@192.168.1.10:554/ch1")
+        self.assertIsNone(app.validated_connection({"host": "  "}))  # blank host = use MediaMTX again
+        for bad in ({"host": "a b"}, {"host": "10.0.0.1", "port": 70000}, {"host": "10.0.0.1", "path": "ch1"},
+                    {"host": "10.0.0.1", "path": "/a b"}, {"host": "10.0.0.1", "user": "x\ny"}, {"host": "file:///etc"}):
+            with self.assertRaises(ValueError, msg=bad):
+                app.validated_connection(bad)
+        kept = app.validated_connection({"host": "10.0.0.1"}, saved_password="saved")  # no password key: keep
+        self.assertEqual(kept["password"], "saved")
+
+    def test_sources_api_hides_password_and_keeps_it(self):
+        c = cam(id="c1")
+        engine = app.Engine.__new__(app.Engine)
+        engine.lock, engine.cameras, engine.mediamtx, engine.thresholds = app.threading.Lock(), {"c1": c}, "rtsp://m", self.thresholds
+        engine.save = lambda: None
+        old, app.engine, app.AUTH = app.engine, engine, ("admin", "admin123")
+        client = app.app.test_client()
+        client.post("/login", json={"username": "admin", "password": "admin123"})
+        try:
+            r = client.post("/api/sources", json={"cameras": [{"id": "c1", "host": "10.0.0.7", "user": "u", "password": "secret", "path": "/s"}]})
+            self.assertEqual(r.status_code, 200)
+            self.assertNotIn("secret", r.get_data(as_text=True))
+            self.assertTrue(client.get("/api/sources").get_json()["cameras"][0]["has_password"])
+            client.post("/api/sources", json={"cameras": [{"id": "c1", "host": "10.0.0.8", "user": "u", "path": "/s"}]})
+            self.assertEqual(c.conn["password"], "secret")                      # omitted password is kept
+            self.assertEqual(c.url(), "rtsp://u:secret@10.0.0.8:554/s")
+            self.assertEqual(client.post("/api/sources", json={"cameras": [{"id": "zz", "host": "1.2.3.4"}]}).status_code, 400)
+            client.post("/api/sources", json={"cameras": [{"id": "c1", "host": ""}]})
+            self.assertEqual(c.url(), "rtsp://x/c1")                            # cleared: back to the default source
+        finally:
+            app.engine, app.AUTH = old, ("admin", "admin123")
+
     def test_stats_never_expose_source(self):
         self.assertNotIn("source", cam().stats(self.thresholds))
 

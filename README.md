@@ -8,7 +8,14 @@ curl -fsSL https://raw.githubusercontent.com/abdulaleemarshad1979/cctv-people-an
 
 This installs Docker if missing, clones the repo to `/opt/cctv-people-analytics`, downloads the DM-Count and CSRNet weights (checksum-verified), and starts two containers: **MediaMTX** (RTSP hub) and the **analytics dashboard**. It prints the dashboard URL and the login: user `admin`, password `admin123`. **Change the password** with `sudo /opt/cctv-people-analytics/scripts/set-password.sh` (asks for the new one) or `sudo /opt/cctv-people-analytics/scripts/set-password.sh 'NewPassword'`. The first build takes a few minutes (PyTorch). Run the same command again to update.
 
-Then connect your NVR (the server must be able to reach it, e.g. over your Tailscale subnet route):
+Then connect your cameras **from the website**: sign in, click **Connect cameras** (top bar), and either
+
+- fill one NVR's details (IP, port, username, password, first camera, number of cameras) and press **Fill the table below**: camera 1 gets channel 1, camera 2 channel 2, and so on (CP PLUS / Dahua and Hikvision paths built in, or a custom path with `{ch}`), or
+- type each camera's IP, port, username, password and stream path in the table (cameras on different NVRs or standalone IP cameras).
+
+Press **Test** on a row to check the connection, then **Save all changes**; the cameras reconnect within seconds. Passwords are stored in `config/cameras.json` (mode 600) and are never sent back to the browser. The server must be able to reach the camera IPs (e.g. over your Tailscale subnet route). Use each NVR's **sub-stream**.
+
+Optional, if you prefer a MediaMTX relay between NVR and app (cameras left blank in the table use `rtsp://mediamtx:8554/camNN`):
 
 ```bash
 cd /opt/cctv-people-analytics
@@ -17,7 +24,7 @@ sudo python3 scripts/gen_mediamtx.py             # writes config/mediamtx.yml: c
 sudo docker compose restart mediamtx
 ```
 
-With 40 cameras on several NVRs, list each NVR in `nvrs.json` with its own `first_camera` (e.g. 1 for the first 12, 13 for the next). Set each camera's role, location, name and count line from its tile in the dashboard.
+With 40 cameras on several NVRs, fill the table once per NVR (e.g. cameras 1-12 from the first NVR, 13-24 from the next), or list each NVR in `nvrs.json` with its own `first_camera`. Set each camera's role, location, name and count line from its tile in the dashboard.
 
 | Task | Command (in `/opt/cctv-people-analytics`) |
 |---|---|

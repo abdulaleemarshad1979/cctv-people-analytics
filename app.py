@@ -7,10 +7,12 @@ inference thread shares one model across all cameras and serves whichever is mos
 """
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import math
 import os
+import re
 import tempfile
 import threading
 import time
@@ -86,9 +88,70 @@ def ground_area(cfg):
     return (geo["near_width_m"] + geo["far_width_m"]) / 2 * (geo["far_m"] - geo["near_m"])
 
 
+HOST_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
+
+
+def validated_connection(c, saved_password=""):
+    """Clean {host, port, user, password, path} from the Connect cameras screen, or None when host is blank.
+
+    Only rtsp:// URLs are ever built from these fields, so a camera entry cannot read local files or
+    other URL schemes. The caller is logged in; the host is still checked so typos fail early.
+    """
+    host = str(c.get("host") or "").strip()
+    if not host:
+        return None
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        if not HOST_RE.match(host):
+            raise ValueError("Host must be an IP address or a host name")
+    try:
+        port = int(c.get("port") or 554)
+    except (TypeError, ValueError):
+        raise ValueError("Port must be a number") from None
+    if not 1 <= port <= 65535:
+        raise ValueError("Port must be 1-65535")
+    user = str(c.get("user") or "")
+    password = saved_password if c.get("password") is None else str(c["password"])
+    path = str(c.get("path") or "/").strip()
+    if len(user) > 64 or len(password) > 128 or any(ord(ch) < 32 for ch in user + password):
+        raise ValueError("User or password is too long or has control characters")
+    if not path.startswith("/") or len(path) > 300 or re.search(r"[\s\x00-\x1f]", path):
+        raise ValueError("Stream path must start with / and contain no spaces")
+    return {"host": host, "port": port, "user": user, "password": password, "path": path}
+
+
+def connection_url(conn):
+    host = f"[{conn['host']}]" if ":" in conn["host"] else conn["host"]
+    auth = f"{quote(conn['user'], safe='')}:{quote(conn['password'], safe='')}@" if conn["user"] else ""
+    return f"rtsp://{auth}{host}:{conn['port']}{conn['path']}"
+
+
+def probe(url):
+    """Try to open a stream and read one frame. Returns (ok, message); the URL is never echoed."""
+    out = {}
+
+    def run():
+        cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG, [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 6000, cv2.CAP_PROP_READ_TIMEOUT_MSEC, 10000])  # long keyframe gaps need a few seconds
+        try:
+            if not cap.isOpened():
+                out["r"] = (False, "Could not connect. Check the IP, port, user, password and stream path.")
+                return
+            ok, frame = cap.read()
+            out["r"] = (True, f"Connected, {frame.shape[1]}x{frame.shape[0]}") if ok else (False, "Connected but no video arrived.")
+        finally:
+            cap.release()
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(18)
+    return out.get("r", (False, "Timed out. Is the IP reachable from this server?"))
+
+
 class Camera:
     def __init__(self, cfg, source, index):
         self.cfg, self.source, self.index = cfg, source, index
+        self.conn, self.url_version = None, 0   # conn = IP/credentials set from the website; wins over source
         self.lock = threading.RLock()
         self.counter = LineCounter(cfg["line"], cfg["in_side"])
         self.tracker = None
@@ -105,27 +168,42 @@ class Camera:
         with self.lock:
             self.status = status
 
+    def url(self):
+        return connection_url(self.conn) if self.conn else self.source
+
     def capture(self):
         time.sleep(self.index * 0.2)  # stagger RTSP connects
-        is_file = not str(self.source).lower().startswith(STREAM_PREFIXES)
-        cap, last, file_fps, failures = None, 0.0, 25.0, 0
+        cap, last, file_fps, failures, seen, is_file = None, 0.0, 25.0, 0, -1, False
+
+        def pause(seconds):  # sleep, but wake early when the connection settings change
+            for _ in range(int(seconds * 4)):
+                if self.url_version != seen:
+                    return
+                time.sleep(0.25)
+
         while True:
             role = self.cfg["role"]
+            if self.url_version != seen:  # new IP/credentials saved: reconnect now
+                seen = self.url_version
+                if cap is not None:
+                    cap.release()
+                    cap = None
+                is_file = not self.url().lower().startswith(STREAM_PREFIXES)
             if role == "off":
                 if cap is not None:
                     cap.release()
                     cap = None
                 self.set_status("disabled")
-                time.sleep(1)
+                pause(1)
                 continue
             if cap is None:
-                cap = cv2.VideoCapture(self.source, cv2.CAP_FFMPEG)
+                cap = cv2.VideoCapture(self.url(), cv2.CAP_FFMPEG)
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 if not cap.isOpened():
                     cap.release()
                     cap = None
                     self.set_status("offline")
-                    time.sleep(5)
+                    pause(5)
                     continue
                 file_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
                 with self.lock:
@@ -139,7 +217,7 @@ class Camera:
                 cap.release()
                 cap, failures = None, 0
                 self.set_status("offline")
-                time.sleep(2)
+                pause(2)
                 continue
             failures = 0
             if is_file:
@@ -276,7 +354,9 @@ class Engine:
             cfg = validated({**DEFAULTS, "name": raw["id"], **{k: v for k, v in raw.items() if k != "source"}})
             if cfg["id"] in self.cameras:
                 raise ValueError(f"Duplicate camera id {cfg['id']}")
-            self.cameras[cfg["id"]] = Camera(cfg, raw.get("source") or f"{self.mediamtx}/{cfg['id']}", i)
+            cam = Camera(cfg, raw.get("source") or f"{self.mediamtx}/{cfg['id']}", i)
+            cam.conn = validated_connection(raw.get("connection") or {})
+            self.cameras[cfg["id"]] = cam
         self.rate_times = deque(maxlen=60)
         self.crowd_model = "loading"
 
@@ -344,11 +424,13 @@ class Engine:
             entry = dict(cam.cfg)
             if not cam.source.startswith(self.mediamtx + "/"):
                 entry["source"] = cam.source
+            if cam.conn:
+                entry["connection"] = cam.conn
             out["cameras"].append(entry)
         fd, tmp = tempfile.mkstemp(dir=CONFIG_PATH.parent, suffix=".tmp")
         with os.fdopen(fd, "w") as f:
             json.dump(out, f, indent=2)
-        os.chmod(tmp, CONFIG_PATH.stat().st_mode & 0o777)  # source URLs may hold credentials
+        os.chmod(tmp, 0o600)  # holds camera passwords
         os.replace(tmp, CONFIG_PATH)
 
     def infer_rate(self):
@@ -522,6 +604,58 @@ def reset_counts(cam_id):
     with cam.lock:
         cam.counter.reset_counts()
     return jsonify(detail(cam))
+
+
+def source_row(cam):
+    """What the browser may see of a camera's connection: never the password."""
+    c = cam.conn or {}
+    return {"id": cam.cfg["id"], "name": cam.cfg["name"], "host": c.get("host", ""), "port": c.get("port", 554),
+            "user": c.get("user", ""), "path": c.get("path", ""), "has_password": bool(c.get("password"))}
+
+
+@app.get("/api/sources")
+def list_sources():
+    return jsonify(cameras=[source_row(c) for c in engine.cameras.values()])
+
+
+@app.post("/api/sources")
+def save_sources():
+    """Save IP / credentials for several cameras at once. A row without "password" keeps the saved one."""
+    rows = (request.get_json(silent=True) or {}).get("cameras")
+    if not isinstance(rows, list) or len(rows) > 200:
+        return jsonify(error="Send a list of cameras"), 400
+    with engine.lock:
+        updates = {}
+        for row in rows:
+            cam = engine.cameras.get(row.get("id")) if isinstance(row, dict) else None
+            if cam is None:
+                return jsonify(error=f"Unknown camera {row.get('id') if isinstance(row, dict) else row!r}"), 400
+            try:
+                updates[cam.cfg["id"]] = validated_connection(row, (cam.conn or {}).get("password", ""))
+            except ValueError as exc:
+                return jsonify(error=f"{cam.cfg['name']}: {exc}"), 400
+        for cam_id, conn in updates.items():
+            cam = engine.cameras[cam_id]
+            cam.conn = conn
+            cam.url_version += 1
+            with cam.lock:
+                cam.tracker, cam.dets, cam.frame, cam.status = None, [], None, "starting"
+        engine.save()
+    return jsonify(saved=len(updates), cameras=[source_row(c) for c in engine.cameras.values()])
+
+
+@app.post("/api/sources/test")
+def test_source():
+    data = request.get_json(silent=True) or {}
+    cam = cam_or_404(data.get("id"))
+    try:
+        conn = validated_connection(data, (cam.conn or {}).get("password", ""))
+    except ValueError as exc:
+        return jsonify(ok=False, message=str(exc))
+    if conn is None:
+        return jsonify(ok=False, message="Enter the camera or NVR IP address first.")
+    ok, message = probe(connection_url(conn))
+    return jsonify(ok=ok, message=message)
 
 
 def jpeg_response(jpg):

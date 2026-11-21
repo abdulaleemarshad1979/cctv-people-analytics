@@ -367,5 +367,114 @@ stage.onclick = async event => {         // camera-height marking only; the line
   } catch (e) { points = []; overlay.innerHTML = ""; msg(e.message + " Click again."); }
 };
 
+// ---------- Connect cameras: IP and credentials for every camera ----------
+const srcModal = $("#src-modal"), srcRows = $("#src-rows");
+let sources = [];            // [{id, name, host, port, user, path, has_password}]
+const touched = new Map();   // camera id -> {password?: string} for rows edited in the table
+
+const PRESETS = {
+  dahua: (ch, main) => `/cam/realmonitor?channel=${ch}&subtype=${main ? 0 : 1}`,
+  hik: (ch, main) => `/Streaming/Channels/${ch}0${main ? 1 : 2}`,
+};
+
+function srcMsg(text, bad = true) { const m = $("#src-msg"); m.textContent = text; m.style.color = bad ? "#b45309" : "#15803d"; }
+
+function buildSourceTable() {
+  srcRows.replaceChildren();
+  for (const c of sources) {
+    const tr = document.createElement("tr"); tr.dataset.id = c.id;
+    const first = document.createElement("td");
+    first.textContent = c.name; const id = document.createElement("small"); id.textContent = c.id; first.appendChild(id);
+    tr.appendChild(first);
+    const field = (key, type = "text", cls = "") => {
+      const td = document.createElement("td"), input = document.createElement("input");
+      input.type = type; input.dataset.key = key; input.autocomplete = type === "password" ? "new-password" : "off";
+      if (cls) input.className = cls;
+      input.addEventListener("input", () => markDirty(c.id, key, input.value));
+      td.appendChild(input); tr.appendChild(td); return input;
+    };
+    const host = field("host"), port = field("port", "number", "c-port"), user = field("user"), pass = field("password", "password"), path = field("path");
+    host.placeholder = "blank = use MediaMTX"; host.value = c.host;
+    port.value = c.port || 554; user.value = c.user; path.value = c.path; path.placeholder = "/cam/realmonitor?channel=1&subtype=1";
+    pass.placeholder = c.has_password ? "saved" : "";
+    const check = document.createElement("td"); check.className = "c-check";
+    const btn = document.createElement("button"); btn.type = "button"; btn.className = "btn ghost"; btn.textContent = "Test";
+    const out = document.createElement("span"); out.className = "test-out"; out.style.marginLeft = "6px";
+    btn.addEventListener("click", () => testRow(c.id, btn, out));
+    check.append(btn, out); tr.appendChild(check);
+    srcRows.appendChild(tr);
+  }
+}
+
+function markDirty(id, key, value) {
+  const entry = touched.get(id) || {};
+  if (key === "password") entry.password = value;
+  touched.set(id, entry);
+  srcRows.querySelector(`tr[data-id="${id}"]`).classList.add("dirty");
+}
+
+function rowValues(id) {
+  const tr = srcRows.querySelector(`tr[data-id="${id}"]`), get = k => $(`[data-key="${k}"]`, tr).value;
+  const row = {id, host: get("host").trim(), port: Number(get("port") || 554), user: get("user"), path: get("path").trim() || "/"};
+  const entry = touched.get(id);
+  if (entry && entry.password !== undefined) row.password = entry.password;   // omitted = keep the saved password
+  return row;
+}
+
+async function testRow(id, btn, out) {
+  btn.disabled = true; out.className = "test-out"; out.textContent = "Testing…";
+  try {
+    const r = await api("/api/sources/test", rowValues(id));
+    out.className = r.ok ? "test-ok" : "test-bad"; out.textContent = (r.ok ? "✔ " : "✖ ") + r.message;
+  } catch (e) { out.className = "test-bad"; out.textContent = "✖ " + e.message; }
+  btn.disabled = false;
+}
+
+async function openSources() {
+  srcModal.classList.remove("hidden"); srcMsg("");
+  try {
+    sources = (await api("/api/sources")).cameras; touched.clear(); buildSourceTable();
+    const from = $("#b-from"); from.innerHTML = "";
+    for (const c of sources) from.add(new Option(`${c.name} (${c.id})`, c.id));
+  } catch (e) { srcMsg(e.message); }
+}
+
+function applyBulk() {
+  const preset = $("#b-preset").value, main = $("#b-stream").value === "main";
+  const start = sources.findIndex(c => c.id === $("#b-from").value);
+  const count = Math.max(1, Math.min(64, Number($("#b-count").value) || 1)), first = Number($("#b-ch").value) || 1;
+  if (!$("#b-host").value.trim()) return srcMsg("Enter the NVR IP address first.");
+  const template = $("#b-custom").value;
+  let applied = 0;
+  for (let i = 0; i < count && start + i < sources.length; i++) {
+    const id = sources[start + i].id, ch = first + i, tr = srcRows.querySelector(`tr[data-id="${id}"]`);
+    const set = (key, value) => { const el = $(`[data-key="${key}"]`, tr); el.value = value; markDirty(id, key, value); };
+    set("host", $("#b-host").value.trim()); set("port", $("#b-port").value || 554); set("user", $("#b-user").value);
+    set("password", $("#b-pass").value);
+    set("path", preset === "custom" ? template.replaceAll("{ch}", ch) : PRESETS[preset](ch, main));
+    applied++;
+  }
+  srcMsg(`Filled ${applied} camera${applied === 1 ? "" : "s"}. Press Test on a row, then Save all changes.`, false);
+}
+
+async function saveSources() {
+  const rows = [...touched.keys()].map(rowValues);
+  if (!rows.length) return srcMsg("Nothing changed.", false);
+  $("#src-save").disabled = true;
+  try {
+    const r = await api("/api/sources", {cameras: rows});
+    sources = r.cameras; touched.clear(); buildSourceTable();
+    srcMsg(`Saved ${r.saved} camera${r.saved === 1 ? "" : "s"}. They reconnect within a few seconds.`, false);
+    poll();
+  } catch (e) { srcMsg(e.message); }
+  $("#src-save").disabled = false;
+}
+
+$("#open-sources").onclick = openSources;
+$("#src-close").onclick = $("#src-backdrop").onclick = () => srcModal.classList.add("hidden");
+$("#b-apply").onclick = applyBulk; $("#src-save").onclick = saveSources;
+$("#b-preset").onchange = e => $("#b-custom-wrap").classList.toggle("hidden", e.target.value !== "custom");
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !srcModal.classList.contains("hidden")) srcModal.classList.add("hidden"); });
+
 poll(); setInterval(poll, 2000);
 setInterval(refreshImages, 3000); setTimeout(refreshImages, 600);
