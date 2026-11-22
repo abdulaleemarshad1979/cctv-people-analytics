@@ -52,7 +52,7 @@ CROWD_INTERVAL = float(os.getenv("CROWD_INTERVAL_S", "30"))
 SHOW_BOXES = os.getenv("SHOW_BOXES", "0") == "1"   # boxes and track ids on the video; off by default (cleaner, cheaper)
 VIEW_WIDTH = int(os.getenv("VIEW_WIDTH", "1280"))   # live viewer JPEG width and quality
 VIEW_QUALITY = int(os.getenv("VIEW_QUALITY", "85"))
-VIEW_FPS = float(os.getenv("VIEW_FPS", "12"))        # video smoothness while a camera is open in the viewer
+VIEW_FPS = float(os.getenv("VIEW_FPS", "25"))        # max viewer frame rate; match the camera (25) so no frames are dropped unevenly
 # Same detector settings as CCTV_MONITOR (conf 0.30, iou 0.55, agnostic NMS). The crowd model counts every density camera
 # every CROWD_INTERVAL; it reads a lone person as 1.5-4, so while the detector sees <= SPARSE_MAX people and the crowd model
 # <= 2x that, the detector's count is shown. Otherwise the crowd model's, never below what the detector sees.
@@ -245,8 +245,8 @@ class Camera:
             if is_file:
                 time.sleep(1 / file_fps)  # files read unthrottled otherwise
             now = time.monotonic()
-            gap = 1 / VIEW_FPS if now < self.watch_until else min(0.5, 1 / FPS[role])
-            if now - last >= gap * 0.6:  # decode only the frames we can use (more while someone watches); 0.6 because frame ticks (40 ms at 25 fps) would otherwise round the rate down
+            watched = now < self.watch_until   # watched: keep every frame, uneven skipping is what made the video jump
+            if watched or now - last >= min(0.5, 1 / FPS[role]) * 0.6:  # otherwise only the frames analysis can use; 0.6 because frame ticks (40 ms at 25 fps) would round the rate down
                 ok, frame = cap.retrieve()
                 if ok:
                     last = now
@@ -481,6 +481,7 @@ class Engine:
         from ultralytics.utils import IterableSimpleNamespace, YAML
         from ultralytics.utils.checks import check_yaml
         log.info("Loading people model %s", MODEL_PATH)
+        os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 10)  # per thread on Linux: inference yields the cores to video decode and the viewer
         model = YOLO(MODEL_PATH)  # one model per worker thread: ultralytics predictors are not thread-safe
         import numpy as np
         import torch
@@ -811,18 +812,18 @@ def stream(cam_id):
     cam = cam_or_404(cam_id)
 
     def frames():
-        last = -1
+        last, sent = -1, 0.0
         cam.detect_due = 0.0   # count right away when the viewer opens
         while True:
-            cam.watch_until = time.monotonic() + 3        # keeps the camera decoding at VIEW_FPS while this stream is open
-            if cam.frame_seq == last:
-                time.sleep(0.02)
+            now = time.monotonic()
+            cam.watch_until = now + 3        # keeps the camera decoding every frame while this stream is open
+            if cam.frame_seq == last or now - sent < 1 / VIEW_FPS * 0.8:
+                time.sleep(0.004)
                 continue
-            last = cam.frame_seq
+            last, sent = cam.frame_seq, now
             jpg = cam.render(VIEW_WIDTH)
             if jpg:
                 yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpg + b"\r\n"
-            time.sleep(1 / VIEW_FPS)
 
     return Response(frames(), mimetype="multipart/x-mixed-replace; boundary=frame",
                     headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
