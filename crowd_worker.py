@@ -7,7 +7,7 @@ import json
 import os
 import sys
 
-os.nice(10)
+os.nice(19)   # below the detector threads (nice 10): when CPU is short, head counts go stale before gate counting drops frames
 os.environ.setdefault("CROWD_THREADS", "1")   # one torch thread per worker is the most CPU-efficient; the parent runs several workers
 out = sys.stdout.buffer
 sys.stdout = sys.stderr                       # model loaders print(); keep stdout for the protocol only

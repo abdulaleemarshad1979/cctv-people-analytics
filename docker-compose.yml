@@ -4,6 +4,10 @@ services:
     restart: unless-stopped
     ports:
       - "${MEDIAMTX_BIND:-127.0.0.1}:8554:8554"   # RTSP; keep on localhost unless something outside must publish
+      - "${WEBRTC_BIND:-0.0.0.0}:8189:8189/udp"   # live video to the browsers (WebRTC); must be reachable from them
+      - "${WEBRTC_BIND:-0.0.0.0}:8189:8189/tcp"   # same, when UDP is blocked
+    environment:
+      MTX_WEBRTCADDITIONALHOSTS: ${WEBRTC_HOSTS:-127.0.0.1}   # the server's LAN / VPN address(es), comma separated
     volumes:
       - ./config/mediamtx.yml:/mediamtx.yml:ro
 
@@ -19,6 +23,8 @@ services:
       - ./config:/config
       - ./weights:/weights:ro
     environment:
+      MEDIAMTX_API: http://mediamtx:9997          # the app registers cameras here and reads them from MediaMTX (one NVR session each)
+      MEDIAMTX_WEBRTC_URL: http://mediamtx:8889   # browsers get live video over WebRTC, MJPEG when that cannot start
       DM_COUNT_WEIGHTS: /weights/model_nwpu.pth
       CSRNET_WEIGHTS: /weights/csrnet_shtechA.pth
       LOGIN_USER: ${LOGIN_USER:-admin}

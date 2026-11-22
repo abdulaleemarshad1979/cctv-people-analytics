@@ -65,7 +65,7 @@ class AppTests(unittest.TestCase):
             c.people = people
             return c
         engine = app.Engine.__new__(app.Engine)
-        engine.thresholds, engine.rate_times, engine.crowd_model = self.thresholds, [], "test"
+        engine.thresholds, engine.rate_times, engine.crowd_model, engine.warnings = self.thresholds, [], "test", []
         engine.cameras = {c.cfg["id"]: c for c in (
             fake("a", "inside", "density", 30), fake("b", "inside", "both", 5),
             fake("c", "outside", "density", 12), fake("d", "outside", "inout", 7))}
@@ -132,6 +132,71 @@ class AppTests(unittest.TestCase):
             self.assertEqual(c.url(), "rtsp://x/c1")                            # cleared: back to the default source
         finally:
             app.engine, app.AUTH = old, ("admin", "admin123")
+
+    def test_playout_evens_out_a_burst_and_stays_live(self):
+        burst = [(10.00, 1, "a"), (10.00, 2, "b"), (10.00, 3, "c")]    # three frames arrive together
+        self.assertIsNone(app.next_playout(burst, 0, 10.05, 0.12))      # too fresh: wait
+        shown, last = [], 0
+        for now in (10.13, 10.17, 10.21):                               # one per tick afterwards, in order
+            last = app.next_playout(burst, last, now, 0.12)[1]
+            shown.append(last)
+        self.assertEqual(shown, [1, 2, 3])
+        many = [(10.0, i, i) for i in range(1, 8)]                      # far behind: jump to the newest
+        self.assertEqual(app.next_playout(many, 0, 11.0, 0.12)[1], 7)
+
+    def test_head_count_is_calibrated_and_median_smoothed(self):
+        c = cam(count_scale=2.0, count_bias=1.0)
+        c.crowd_hist = app.deque(maxlen=3)
+        class Fake:
+            values = iter([10.0, 11.0, 90.0])   # the last one is a glitch
+            def count(self, frame):
+                return next(self.values)
+        c.frame = object()
+        for _ in range(3):
+            c.count_crowd(Fake())
+        self.assertEqual(c.crowd_raw, 90.0)       # raw output stays visible
+        self.assertEqual(c.crowd_total, 23.0)     # median of 21, 23, 181
+        with self.assertRaises(ValueError):
+            app.validated({**app.DEFAULTS, "id": "c1", "name": "C1", "count_scale": 0})
+
+    def test_hub_paths_and_fallback(self):
+        self.assertEqual(app.main_path("/cam/realmonitor?channel=2&subtype=1"), "/cam/realmonitor?channel=2&subtype=0")
+        self.assertEqual(app.main_path("/Streaming/Channels/302"), "/Streaming/Channels/301")
+        self.assertIsNone(app.main_path("/live"))
+        c = cam(id="cam07")
+        c.hub_base, c.hub_native = "rtsp://mtx:8554", False
+        c.conn = app.validated_connection({"host": "10.0.0.5", "user": "u", "password": "p", "path": "/cam/realmonitor?channel=7&subtype=1"})
+        wanted = c.hub_sources()
+        self.assertEqual(sorted(wanted), ["cam07", "cam07_hd"])
+        self.assertTrue(wanted["cam07"][0].endswith("subtype=1") and wanted["cam07_hd"][0].endswith("subtype=0"))
+        self.assertEqual((wanted["cam07"][1], wanted["cam07_hd"][1]), (False, True))   # analysis always on; main stream only when watched
+        self.assertTrue(c.url().startswith("rtsp://u:p@10.0.0.5"))      # MediaMTX down or not yet synced: read the camera directly
+        c.hub = True
+        self.assertEqual(c.url(), "rtsp://mtx:8554/cam07")
+        old, app.WHEP_URL = app.WHEP_URL, "http://mtx:8889"
+        try:
+            c.registered = {"cam07", "cam07_hd"}
+            self.assertEqual((c.play_path(), c.play_path(hd=True)), ("cam07", "cam07_hd"))
+            c.hub = False
+            c.hub_native = True                      # the default MediaMTX path name does not count while a typed-in connection is not registered
+            self.assertIsNone(c.play_path())
+        finally:
+            app.WHEP_URL = old
+
+    def test_webrtc_proxy_only_forwards_known_cameras(self):
+        c = cam(id="cam01")
+        engine = app.Engine.__new__(app.Engine)
+        engine.cameras = {"cam01": c}
+        old = app.engine, app.WHEP_URL, app.AUTH
+        app.engine, app.WHEP_URL, app.AUTH = engine, "http://127.0.0.1:9", ("admin", "admin123")
+        client = app.app.test_client()
+        client.post("/login", json={"username": "admin", "password": "admin123"})
+        try:
+            for bad in ("zz/whep", "cam01/../x/whep", "cam01/other", "cam01/whep/not-a-session"):
+                self.assertEqual(client.post(f"/webrtc/{bad}", data="v=0").status_code, 404, bad)
+            self.assertEqual(client.post("/webrtc/cam01/whep", data="v=0").status_code, 502)   # MediaMTX unreachable: the page falls back to MJPEG
+        finally:
+            app.engine, app.WHEP_URL, app.AUTH = old
 
     def test_stats_never_expose_source(self):
         self.assertNotIn("source", cam().stats(self.thresholds))

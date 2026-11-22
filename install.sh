@@ -45,7 +45,16 @@ if [ ! -f .env ]; then
   cp .env.example .env
   chmod 600 .env
 fi
-[ -f config/mediamtx.yml ] || cp mediamtx/mediamtx.example.yml config/mediamtx.yml
+# An untouched earlier copy (no camera paths in it) is replaced so it gets the API and WebRTC settings.
+{ [ -f config/mediamtx.yml ] && grep -q 'source:' config/mediamtx.yml; } || cp mediamtx/mediamtx.example.yml config/mediamtx.yml
+ips="$(hostname -I 2>/dev/null | awk '{$1=$1; gsub(" ", ","); print}')"
+if [ -n "$ips" ]; then   # browsers need this server's address for live video (an older .env has no such line)
+  if ! grep -q '^WEBRTC_HOSTS=' .env; then
+    printf '\nWEBRTC_HOSTS=127.0.0.1,%s\n' "$ips" >> .env
+  elif grep -q '^WEBRTC_HOSTS=127.0.0.1$' .env; then
+    sed -i "s/^WEBRTC_HOSTS=.*/WEBRTC_HOSTS=127.0.0.1,$ips/" .env
+  fi
+fi
 [ -f config/nvrs.json ] || cp nvrs.example.json config/nvrs.json
 chmod 600 config/nvrs.json
 chown -R 1000:1000 config 2>/dev/null || true   # the app container runs as uid 1000

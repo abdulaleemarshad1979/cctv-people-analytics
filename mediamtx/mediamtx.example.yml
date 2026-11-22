@@ -1,13 +1,34 @@
-# MediaMTX: the RTSP hub between your NVR(s) and the analytics app (camera "cam01" = rtsp://mediamtx:8554/cam01).
-# Replace this file's paths with scripts/gen_mediamtx.py (see README), or add your own below.
+# MediaMTX: the hub between your cameras / NVRs, the analytics app (analysis) and the browsers (live video).
+# Camera "cam01" = rtsp://mediamtx:8554/cam01. The app adds the cameras you type into "Connect cameras" itself (through the API below);
+# scripts/gen_mediamtx.py writes this file plus one path per NVR channel if you prefer to list them.
 logLevel: info
 rtsp: yes
 rtspAddress: :8554
-protocols: [tcp]
+rtspTransports: [tcp]
 rtmp: no
 hls: no
-webrtc: no
 srt: no
-api: no
+# Control API for the analytics app. Not published to the host; only this machine and docker networks may use it.
+api: yes
+apiAddress: :9997
+# Live video to the browser over WebRTC: the camera's own H.264 is passed through, nothing is re-encoded.
+# The app proxies the signalling (:8889) behind its login; the video itself flows to :8189 (UDP, TCP when UDP is blocked).
+# webrtcAdditionalHosts = the addresses browsers use to reach this server (LAN / VPN IPs): set WEBRTC_HOSTS in .env.
+webrtc: yes
+webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: :8189
+webrtcAdditionalHosts: [127.0.0.1]
+authInternalUsers:
+  - user: any
+    ips: []
+    permissions:
+      - action: publish
+      - action: read
+      - action: playback
+  - user: any
+    ips: ['127.0.0.1', '::1', '172.16.0.0/12']
+    permissions:
+      - action: api
 paths:
   all_others:   # anything may publish here, e.g. ffmpeg -re -i clip.mp4 -c copy -f rtsp rtsp://localhost:8554/cam01

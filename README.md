@@ -67,7 +67,7 @@ Each camera is read from `rtsp://<mediamtx>/<id>` (default `rtsp://127.0.0.1:855
 cd ~/Work/Analytics
 python3 -m pip install -r requirements.txt
 python3 app.py          # http://127.0.0.1:5000
-python3 -m unittest     # 11 tests
+python3 -m unittest     # 19 tests
 ```
 
 `WEB_HOST=0.0.0.0` exposes it to the network. The login defaults to `admin` / `admin123` (`LOGIN_USER`, `LOGIN_PASSWORD`); change it before exposing the app.
@@ -98,28 +98,45 @@ Edit `cameras.json` (the UI also saves role, name, zone, line and calibration ba
 
 ## Models
 
-- **Gate crossings:** the `Count peoplr` algorithm: person detection with `conf=0.12, iou=0.8`, ByteTrack IDs, and the foot-point line crossing in `people_analytics.py` (unchanged). The detector here is `yolov8n.pt` at 480 px for speed; set `PEOPLE_MODEL=yolo26s-seg.pt` (as in `Count peoplr`) and `INOUT_IMGSZ=960` for its exact model, about 4× slower per frame.
+- **Gate crossings:** the `Count peoplr` algorithm: person detection with `conf=0.12, iou=0.8`, ByteTrack IDs, and the foot-point line crossing in `people_analytics.py` (unchanged). The detector here is `yolov8n.pt` at `INOUT_IMGSZ` (640); set `PEOPLE_MODEL=yolo26s-seg.pt` (as in `Count peoplr`) and `INOUT_IMGSZ=960` for its exact model, about 4× slower per frame.
 - **Crowd count and density:** `dm_count/`, `csrnet/`, `fusion/` are copied from `CCTV_MONITOR`; the ~150 MB weights are read from `../CCTV_MONITOR/` (override with `CCTV_MONITOR_DIR`, `DM_COUNT_WEIGHTS`, `CSRNET_WEIGHTS`, `FUSION_HEAD_WEIGHTS`). Input is 512×288 as in CCTV_MONITOR's CPU mode; its broadcast-overlay filter and flip TTA are not used. If the weights are missing, the header says so and Density cameras stay at 0.
 
 ## Speed and accuracy
 
 The video is kept clean and cheap: the count line plus the count only, with no heat maps, boxes or track IDs (set `SHOW_BOXES=1` to draw boxes while tuning a gate). The dashboard stays smooth because analysis never blocks it:
 
-- **Live viewer:** an open camera is sent at up to 25 fps (`VIEW_FPS`), every frame kept; other cameras are only decoded at the rate analysis needs. Tiles are refreshed snapshots.
-- **A server for the cameras only:** the cores are split by core count: detector workers (~35 % of cores, `INOUT_WORKERS`, ~28 line-count checks/s each), crowd-model workers (~25 %, `CROWD_WORKERS`, one count per ~3-5 s each) and the rest for video decode and the website. Each worker uses one torch thread, the most CPU-efficient size. The crowd workers run at low priority so line counting always wins the CPU.
+- **Live video (WebRTC through MediaMTX), as in `CCTV_MONITOR`:** the browser plays the camera's own H.264 straight from MediaMTX, so nothing is re-encoded on the server (no JPEG, no lag from a busy CPU) and the picture is as sharp as the camera sends. Tiles on screen (up to 16 at once) are live 25 fps video; an opened camera plays its **main stream** when the camera has one (the app derives it from the sub-stream path for Dahua / CP PLUS `subtype=1` and Hikvision `…02`, and pulls it only while someone watches). The count and the count line are drawn over the video in the browser. If WebRTC cannot start (H.265 or B-frames from the camera, UDP/TCP 8189 blocked, MediaMTX down) the tile falls back to refreshed snapshots (every 1 s) and the opened camera to the MJPEG stream, automatically; nothing to switch.
+- **One session per camera:** cameras entered on *Connect cameras* are registered in MediaMTX by the app (control API), and analysis reads them from MediaMTX too, so the NVR serves each stream once however many people watch. If MediaMTX is unreachable the app reads the cameras directly again.
+- **MJPEG fallback viewer:** up to 25 fps (`VIEW_FPS`), frames encoded once and shared between viewers; `VIEW_DELAY_MS` (default 0) can hold frames to spread network bursts, at that much extra delay. On this machine's looping test stream the fallback measured 24 fps with the longest gap 100-120 ms, no better or worse than before, so it is a fallback, not the smooth path.
+- **A server for the cameras only:** the cores are split by core count: detector workers (~35 % of cores, `INOUT_WORKERS`, ~28 line-count checks/s each), crowd-model workers (~25 %, `CROWD_WORKERS`, one count per ~3-5 s each) and the rest for video decode and the website. Each worker uses one torch thread, the most CPU-efficient size. The crowd workers run at the lowest priority (nice 19, below the detectors at 10), so when CPU is short, head counts yield first. (On the 4-core test laptop this did not change the gate rate: it was already limited by the CPU the detectors got.)
 - **Line counting (In / Out):** each In/Out and Both camera is checked `INOUT_FPS` times a second (default 10) on the whole frame at `INOUT_IMGSZ` (default 640, native for a 640×360 sub-stream). Replay test (a synthetic person crossing the line 4 times in and 3 times out, one at a time): all 7 crossings counted at 10 and 12 checks/s for walks of 3, 1.5 and 1 s; at 5 checks/s fast walkers were missed. Only synthetic data: test each gate on its own footage.
 - **Head count every 30 s:** every Density and Both camera gets a crowd-model count every `CROWD_INTERVAL_S` (default 30) at the model's 512×288 input (`CROWD_INFER_WIDTH/HEIGHT` raise it: counts of dense scenes rise at larger sizes, but with no hand-counted frames here we do not know which size is right; it costs 2-3x the CPU).
 - **Few people in view:** the crowd model is built for dense crowds and reads one close-up person as 1.5-4. So Density and Both cameras also run the person detector (every `DETECT_INTERVAL_S`, default 30 s, and every 2 s while the camera is open in the viewer). The detector's count is shown only when it sees at most `SPARSE_MAX` people (default 10) and the crowd model at most twice that; otherwise the crowd model's, never below the detector's. A detector count older than ~95 s is ignored.
 - **Video quality:** the live viewer sends JPEG at up to `VIEW_WIDTH` (1280) and `VIEW_QUALITY` (85); analysis uses the sub-stream the camera is configured with.
 - **Sizing for ~36 cameras (estimates from an 8-core machine):** decode ~2 cores, website ~1, crowd counts every 30 s ~5, each In/Out camera at 10 checks/s ~0.5. With 10 In/Out cameras plan ~20 cores; with all 36 doing both line and head counts plan ~32-40 cores. RAM (32 GB) and disk are not limits. The editor shows each gate's actual rate against its target, and a tile turns amber ("slow") when it falls behind.
-- **Measured on this 8-core, no-GPU machine** (40 looping 640×360 files standing in for cameras) with 4 In/Out + 36 head-count cameras: 3 detector workers gave ~5 checks/s per gate (target 10) and 2 crowd workers needed ~90 s for a round of 36 counts (target 30 s). That is the expected shortfall for 8 cores; with more cores both targets should be met, but this has not been run on a bigger machine.
+- **Test laptop caveat:** the machine behind the numbers below is an i7-1185G7 laptop (4 cores, 8 threads, throttled clocks), not an 8-core server. One detector check costs 35-70 ms alone and about 150 ms while 40 cameras and 2 crowd workers run; 3 detector threads in one process give 38 checks/s when nothing else runs, so threads scale and the limit is CPU. Plan cores from the table above, not from this laptop.
+- **Measured on this 8-thread, no-GPU machine** (40 looping 640×360 files standing in for cameras) with 4 In/Out + 36 head-count cameras: 3 detector workers gave ~5 checks/s per gate (target 10) and 2 crowd workers needed ~90 s for a round of 36 counts (target 30 s). That is the expected shortfall for 8 cores; with more cores both targets should be met, but this has not been run on a bigger machine.
+
+## Live video setup (WebRTC)
+
+- Cameras must send **H.264 without B-frames** (set the stream to H.264, Baseline/Main profile; not H.265 / "H.264+" / Smart codec). Anything else still works through the MJPEG fallback, with less quality and more server load.
+- The browser must reach this server on **port 8189, UDP and TCP** (published by `docker-compose.yml`), besides the dashboard port. `WEBRTC_HOSTS` in `.env` lists the addresses browsers use for this server (LAN IP, Tailscale IP, DNS name); `install.sh` fills in this machine's addresses. After changing it: `sudo docker compose up -d`.
+- Existing installs: run `install.sh` again (it replaces an untouched `config/mediamtx.yml`); if you generated that file with `gen_mediamtx.py`, run it again. Browsers load nothing from the internet (no STUN, no CDN).
+- Behind a reverse proxy, forward `/webrtc/` like any other path. The video itself does not pass through the proxy; port 8189 must be reachable directly.
+
+## Counting accuracy
+
+- **Head count:** the crowd model's number is corrected per camera (`count_scale`, `count_bias`, default 1 and 0), the linear calibration from `CCTV_MONITOR`; the detector's count is still the floor. `COUNT_TEMPORAL_WINDOW=3` also takes the median of the last 3 counts (one bad frame cannot move the total, but a real surge shows 30-60 s later); it is off by default, as in `CCTV_MONITOR` on CPU.
+- **Reaching 90 % needs your own footage:** nobody can promise a percentage without hand counts. For each camera, write down the "crowd model" number shown in its viewer and your own count of the same frame, 3 or more times (different crowd sizes), into a CSV `camera,model,actual`, then run `python3 scripts/calibrate_counts.py counts.csv`. It prints the accuracy now and after the fitted correction (accuracy = 100 − mean |model − actual| / max(actual, 1)); `--write config/cameras.json` stores the correction; restart the app to apply it. Do the same for gates: stand and count crossings for 5 minutes against `IN`/`OUT`.
+- **Health warnings:** every 30 s (`HEALTH_CHECK_S`) the app logs and shows in the header what is wrong and why: camera offline, camera sending under 8 fps, picture under 640 px wide, repeated reconnects, line counting under 5 checks/s, head count older than 70 s. A hung camera now ends in a reconnect instead of a frozen frame.
 
 ## Known limits
 
 - Counts live in memory: they reset on server restart, or with *Reset counts* per camera.
 - The fusion model was built for crowds; on sparse scenes or screens/posters it can over-count. Check each camera against a manual count.
 - Density per m² assumes a level floor with people spread evenly across the visible ground; use the area override for obstructed views.
-- Tiles show a snapshot refreshed every 3 s; live annotated video streams only in the opened camera view.
+- The WebRTC video has no burned-in overlay: the count and line are drawn by the browser from the live numbers (refreshed ~0.7 s in an opened camera, 2 s in the grid). Snapshots and the MJPEG fallback are annotated by the server.
+- Not tested against real cameras or an NVR: WebRTC, the MediaMTX registration and the count correction were run on this machine with a looping test stream. Try one real camera first.
 
 ## API
 

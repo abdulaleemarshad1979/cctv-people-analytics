@@ -14,8 +14,8 @@ from urllib.parse import quote
 src = sys.argv[1] if len(sys.argv) > 1 else "config/nvrs.json"
 dst = sys.argv[2] if len(sys.argv) > 2 else "config/mediamtx.yml"
 nvrs = json.load(open(src))
-lines = ["logLevel: info", "rtsp: yes", "rtspAddress: :8554", "protocols: [tcp]", "rtmp: no", "hls: no",
-         "webrtc: no", "srt: no", "api: no", "paths:", "  all_others:"]
+example = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "mediamtx", "mediamtx.example.yml")
+lines = open(example).read().split("\npaths:")[0].split("\n") + ["paths:", "  all_others:"]   # same settings as the example (API, WebRTC)
 used = set()
 for nvr in nvrs:
     auth = f"{quote(nvr['user'], safe='')}:{quote(nvr['password'], safe='')}"

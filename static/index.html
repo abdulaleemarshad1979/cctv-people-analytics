@@ -78,6 +78,8 @@
       <div class="full-view-layout">
         <div class="full-view-body">
           <div class="fs-title" id="m-fs-title"></div>
+          <video id="m-video" muted playsinline autoplay></video><video id="m-video-hd" muted playsinline autoplay></video>
+          <div id="m-hud" hidden><svg id="m-hud-svg"></svg><div id="m-hud-label"></div></div>
           <img id="m-live" alt="Live annotated camera stream">
           <div id="m-stage"><img id="m-photo" alt="Camera snapshot"><svg id="m-overlay" viewBox="0 0 100 100" preserveAspectRatio="none"></svg></div>
           <button class="fs-btn" id="m-fs" type="button" title="Full screen (F)" aria-label="Full screen">
@@ -126,6 +128,7 @@
     </div>
   </div>
 
+  <script src="/static/monitor/js/webrtc.js"></script>
   <script src="/static/monitor/js/analytics.js"></script>
 </body>
 </html>

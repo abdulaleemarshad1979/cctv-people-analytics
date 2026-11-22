@@ -13,11 +13,14 @@ import logging
 import math
 import os
 import re
+import statistics
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
 from collections import deque
 from datetime import timedelta
 from pathlib import Path
@@ -27,7 +30,9 @@ import cv2
 from flask import Flask, Response, abort, jsonify, redirect, request, session
 from people_analytics import LineCounter, estimate_camera_geometry, estimate_height_from_person
 
-os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
+# Low-latency RTSP read, as CCTV_MONITOR: no input buffering. (Its short probe options are left out: they can fail on cameras that send codec info late.)
+os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS",
+                      "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay")
 # Must be set before torch loads: otherwise its pool spins 7 busy-wait threads that starve the video decoders.
 # Every detector / crowd worker runs on one torch thread (the most CPU-efficient size); throughput comes from more workers.
 os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -53,11 +58,18 @@ SHOW_BOXES = os.getenv("SHOW_BOXES", "0") == "1"   # boxes and track ids on the 
 VIEW_WIDTH = int(os.getenv("VIEW_WIDTH", "1280"))   # live viewer JPEG width and quality
 VIEW_QUALITY = int(os.getenv("VIEW_QUALITY", "85"))
 VIEW_FPS = float(os.getenv("VIEW_FPS", "25"))        # max viewer frame rate; match the camera (25) so no frames are dropped unevenly
+VIEW_DELAY = float(os.getenv("VIEW_DELAY_MS", "0")) / 1000   # MJPEG fallback only: hold frames this long so a burst from the network is spread out (100-150 on a bursty link; adds that much delay; not measured to help)
 # Same detector settings as CCTV_MONITOR (conf 0.30, iou 0.55, agnostic NMS). The crowd model counts every density camera
 # every CROWD_INTERVAL; it reads a lone person as 1.5-4, so while the detector sees <= SPARSE_MAX people and the crowd model
 # <= 2x that, the detector's count is shown. Otherwise the crowd model's, never below what the detector sees.
 SPARSE_MAX = int(os.getenv("SPARSE_MAX", "10"))
+# Video to the browser goes through MediaMTX over WebRTC (no re-encoding here; the browser decodes the camera's own H.264), as in CCTV_MONITOR.
+# MEDIAMTX_API / MEDIAMTX_WEBRTC_URL are set by docker compose; blank = off and the viewer uses the MJPEG stream.
+RELAY_API = os.getenv("MEDIAMTX_API", "").rstrip("/")
+WHEP_URL = os.getenv("MEDIAMTX_WEBRTC_URL", "").rstrip("/")
+HEALTH_S = float(os.getenv("HEALTH_CHECK_S", "30"))
 DETECT_INTERVAL = float(os.getenv("DETECT_INTERVAL_S", "30"))   # detector count per density camera; every 2 s while someone watches it
+COUNT_WINDOW = int(os.getenv("COUNT_TEMPORAL_WINDOW", "1"))   # median of the last N head counts (30 s apart) drops one-off glitches but delays a real surge; 1 = off, as CCTV_MONITOR on CPU
 COUNT_CONF = float(os.getenv("YOLO_COUNT_CONFIDENCE", "0.40"))   # CCTV_MONITOR uses 0.30, but on a close-up camera a faint 0.28 box counted one person as 2
 FPS = {"inout": TRACK_FPS, "both": TRACK_FPS, "density": 1 / CROWD_INTERVAL}
 ROLES = ("inout", "density", "both", "off")
@@ -67,9 +79,10 @@ DENSITY = ("density", "both")   # roles that report people per m2
 STREAM_PREFIXES = ("rtsp://", "rtmp://", "srt://", "http://", "https://")
 DEFAULTS = {"zone": "", "location": "outside", "role": "density", "line": [[0.1, 0.5], [0.9, 0.5]], "in_side": "positive",
             "vertical_fov_deg": 50.0, "horizontal_fov_deg": 70.0, "tilt_deg": 30.0,
-            "reference_height_m": 1.7, "camera_height_m": None, "area_m2": None}
+            "reference_height_m": 1.7, "camera_height_m": None, "area_m2": None,
+            "count_scale": 1.0, "count_bias": 0.0}   # head-count calibration from hand counts: see scripts/calibrate_counts.py
 EDITABLE = {"name", "zone", "location", "role", "line", "in_side", "vertical_fov_deg", "horizontal_fov_deg",
-            "tilt_deg", "reference_height_m", "camera_height_m", "area_m2"}
+            "tilt_deg", "reference_height_m", "camera_height_m", "area_m2", "count_scale", "count_bias"}
 GREEN, YELLOW = (55, 230, 110), (0, 230, 255)
 
 
@@ -89,7 +102,8 @@ def validated(cfg):
         raise ValueError("Name is required")
     for key, low, high in (("vertical_fov_deg", 1, 179), ("horizontal_fov_deg", 1, 179),
                            ("tilt_deg", -89, 89), ("reference_height_m", 0.1, 3),
-                           ("camera_height_m", 0.2, 100), ("area_m2", 1, 1_000_000)):
+                           ("camera_height_m", 0.2, 100), ("area_m2", 1, 1_000_000),
+                           ("count_scale", 0.1, 10), ("count_bias", -500, 500)):
         if cfg[key] is None and key in ("camera_height_m", "area_m2"):
             continue
         value = float(cfg[key])
@@ -167,6 +181,45 @@ def probe(url):
     return out.get("r", (False, "Timed out. Is the IP reachable from this server?"))
 
 
+def main_path(path):
+    """Main-stream path for a sub-stream path (Dahua/CP PLUS subtype=1 -> 0, Hikvision .../NN02 -> NN01), or None."""
+    if "subtype=1" in path:
+        return path.replace("subtype=1", "subtype=0")
+    m = re.fullmatch(r"(/Streaming/Channels/\d+)02", path)
+    return m.group(1) + "01" if m else None
+
+
+def hub_call(method, path, body=None):
+    """MediaMTX control API call: (status, json). Raises OSError when MediaMTX is unreachable."""
+    req = urllib.request.Request(RELAY_API + path, method=method, data=None if body is None else json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=4) as res:
+            return res.status, json.loads(res.read() or b"null")
+    except urllib.error.HTTPError as exc:
+        return exc.code, None
+
+
+def hub_ensure(name, url, on_demand, existing):
+    """Make MediaMTX path `name` pull `url` (`existing`: its configured paths by name); changes nothing, so drops no viewer, when it already does."""
+    want = {"source": url, "sourceOnDemand": on_demand, "rtspTransport": "tcp"}
+    have = existing.get(name)
+    if have and all(have.get(k) == v for k, v in want.items()):
+        return
+    status, _ = hub_call("POST", f"/v3/config/paths/{'replace' if have else 'add'}/{name}", want)
+    if status != 200:
+        raise RuntimeError(f"MediaMTX refused path {name}: HTTP {status}")
+
+
+def next_playout(recent, last, now, delay, max_backlog=3):
+    """Frame (arrived, seq, image) the viewer shows now, or None. Plays unseen frames in order once they are `delay` old,
+    one per tick, so a burst of frames from the network comes out evenly; if more than max_backlog wait, jump to the newest."""
+    ready = [r for r in recent if r[1] > last and now - r[0] >= delay]
+    if not ready:
+        return None
+    return ready[-1] if len(ready) > max_backlog else ready[0]
+
+
 class Camera:
     def __init__(self, cfg, source, index):
         self.cfg, self.source, self.index = cfg, source, index
@@ -179,11 +232,19 @@ class Camera:
         self.dets, self.people, self.visible = [], 0, 0   # people = crowd count (tracked count for inout)
         self.status = "starting"
         self.due = self.crowd_due = self.detect_due = 0.0
-        self.yolo_n = self.crowd_total = None   # latest detector count / crowd-model count; people is chosen from them
+        self.yolo_n = self.crowd_total = self.crowd_raw = None   # detector count / crowd-model count (calibrated, median of the last few) / its latest raw output; people is chosen from them
+        self.crowd_hist = deque(maxlen=max(1, COUNT_WINDOW))
         self.yolo_at = 0.0
         self.busy = self.crowd_busy = False     # a worker is handling this camera; stops two workers racing on one tracker
         self.times = deque(maxlen=20)
         self.crowd_seq, self.counted_at, self.watch_until = 0, None, 0.0   # watch_until: someone is viewing this camera
+        self.hub_base, self.hub, self.hub_native = None, False, False   # hub: analysis reads our MediaMTX path; hub_native: the source already is one
+        self.registered = set()                                         # MediaMTX paths this app created for the camera (id, id_hd)
+        self.frame_at = self.hub_since = self.hub_retry_at = self.viewed_until = 0.0   # last frame / hub switched on / do not retry the hub before / camera open in the viewer
+        self.grabs = self.reconnects = 0   # decoded frames / re-opens: the health check turns these into source fps and drop-outs
+        self.size = None                   # (width, height) the camera sends
+        self.recent = deque(maxlen=10)   # (arrived, seq, frame) while watched: the viewer's de-jitter buffer
+        self.jpegs = {}                  # width -> (key, jpeg): viewers and tiles of one frame share one encode
 
     # ---- capture -------------------------------------------------------------------
     def set_status(self, status):
@@ -191,7 +252,27 @@ class Camera:
             self.status = status
 
     def url(self):
+        if self.hub:
+            return f"{self.hub_base}/{self.cfg['id']}"   # one session to the NVR: MediaMTX pulls it once and serves both analysis and viewers
         return connection_url(self.conn) if self.conn else self.source
+
+    def hub_sources(self):
+        """MediaMTX paths to create for this camera, {path: (rtsp url, on demand)}: camNN = the stream we analyse, camNN_hd = its main stream."""
+        cid = self.cfg["id"]
+        if self.conn:
+            out = {cid: (connection_url(self.conn), False)}
+            hd = main_path(self.conn["path"])
+            if hd:
+                out[cid + "_hd"] = (connection_url({**self.conn, "path": hd}), True)
+            return out
+        return {} if self.hub_native or not self.source.lower().startswith("rtsp://") else {cid: (self.source, False)}
+
+    def play_path(self, hd=False):
+        """MediaMTX path the browser can play over WebRTC, or None (then the viewer uses MJPEG)."""
+        if not WHEP_URL or not (self.hub or (self.hub_native and not self.conn)):   # a camera with typed-in IP is on MediaMTX only once registered
+            return None
+        cid = self.cfg["id"] + ("_hd" if hd else "")
+        return cid if not hd or cid in self.registered else None
 
     def capture(self):
         time.sleep(self.index * 0.2)  # stagger RTSP connects
@@ -219,7 +300,8 @@ class Camera:
                 pause(1)
                 continue
             if cap is None:
-                cap = cv2.VideoCapture(self.url(), cv2.CAP_FFMPEG)
+                # timeouts: a hung NVR must end in a reconnect, not a frozen frame that still says "live"
+                cap = cv2.VideoCapture(self.url(), cv2.CAP_FFMPEG, [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 8000, cv2.CAP_PROP_READ_TIMEOUT_MSEC, 10000])
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 if not cap.isOpened():
                     cap.release()
@@ -228,6 +310,7 @@ class Camera:
                     pause(5)
                     continue
                 file_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+                self.size, self.reconnects = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))), self.reconnects + 1
                 with self.lock:
                     self.tracker = None
                     self.counter.forget_tracks()
@@ -242,16 +325,22 @@ class Camera:
                 pause(2)
                 continue
             failures = 0
+            self.grabs += 1
             if is_file:
                 time.sleep(1 / file_fps)  # files read unthrottled otherwise
             now = time.monotonic()
             watched = now < self.watch_until   # watched: keep every frame, uneven skipping is what made the video jump
+            if not watched and self.recent:
+                with self.lock:
+                    self.recent.clear()
             if watched or now - last >= min(0.5, 1 / FPS[role]) * 0.6:  # otherwise only the frames analysis can use; 0.6 because frame ticks (40 ms at 25 fps) would round the rate down
                 ok, frame = cap.retrieve()
                 if ok:
                     last = now
                     with self.lock:
-                        self.frame, self.frame_seq, self.status = frame, self.frame_seq + 1, "live"
+                        self.frame, self.frame_seq, self.status, self.frame_at = frame, self.frame_seq + 1, "live", now
+                        if watched:
+                            self.recent.append((now, self.frame_seq, frame))
 
     # ---- inference -----------------------------------------------------------------
     def infer(self, model, tracker_args):
@@ -307,19 +396,20 @@ class Camera:
                 return
             self.yolo_n, self.yolo_at = n, now
             self.choose_people()
-            self.detect_due = now + (2 if now < self.watch_until else DETECT_INTERVAL)
+            self.detect_due = now + (2 if now < max(self.watch_until, self.viewed_until) else DETECT_INTERVAL)
 
     def count_crowd(self, counter):
         """Crowd count from the DM-Count + CSRNet fusion model (density / both)."""
         with self.lock:
             frame, seq, role = self.frame, self.frame_seq, self.cfg["role"]
-        total = counter.count(frame)
+        raw = counter.count(frame)
         now = time.monotonic()
         with self.lock:
             if self.cfg["role"] != role:
                 return
-            self.crowd_seq, self.counted_at = seq, now
-            self.crowd_total = total
+            self.crowd_seq, self.counted_at, self.crowd_raw = seq, now, raw
+            self.crowd_hist.append(max(0.0, raw * self.cfg["count_scale"] + self.cfg["count_bias"]))
+            self.crowd_total = statistics.median(self.crowd_hist)
             self.choose_people()
             self.crowd_due = now + CROWD_INTERVAL
 
@@ -336,9 +426,10 @@ class Camera:
         counted_at, visible = self.counted_at, self.visible
         with self.lock:
             detected = self.detector_count()
-            crowd_total = self.crowd_total
+            crowd_total = self.crowd_raw
         out = {"id": cfg["id"], "name": cfg["name"], "zone": cfg["zone"], "location": cfg["location"], "role": cfg["role"],
                "status": status, "people": people, "visible": visible, "fps": self.rate(),
+               "play": self.play_path(), "play_hd": self.play_path(hd=True),
                "target_fps": TRACK_FPS if cfg["role"] in TRACKING else 0}
         if cfg["role"] in TRACKING:
             out.update(counts)
@@ -353,14 +444,27 @@ class Camera:
                        detected=detected, crowd_model_count=None if crowd_total is None else round(crowd_total, 1))
         return out
 
-    def render(self, width=None):
-        """JPEG of the latest frame with the count line and the count only (boxes with SHOW_BOXES=1)."""
+    def render(self, width=None, item=None):
+        """JPEG of a frame (default: the latest) with the count line and the count only (boxes with SHOW_BOXES=1)."""
         with self.lock:
-            frame, cfg, dets = self.frame, self.cfg, list(self.dets)
+            seq, frame = (item[1], item[2]) if item else (self.frame_seq, self.frame)
+            cfg, dets = self.cfg, list(self.dets)
             counts, people = self.counter.counts(), self.people
         if frame is None:
             return None
-        frame = frame.copy()
+        label = {"inout": f"IN {counts['in']}  OUT {counts['out']}",
+                 "both": f"IN {counts['in']}  OUT {counts['out']}  PEOPLE {people}",
+                 "density": f"PEOPLE {people}"}.get(cfg["role"], "")
+        key = (seq, label, cfg["role"], str(cfg["line"]), cfg["in_side"], dets if SHOW_BOXES else None)
+        cached = self.jpegs.get(width)
+        if cached and cached[0] == key:
+            return cached[1]
+        h, w = frame.shape[:2]
+        if width and width < w:  # shrink first: the overlay is then drawn on the pixels that are sent
+            frame = cv2.resize(frame, (width, round(h * width / w)), interpolation=cv2.INTER_AREA)
+        else:
+            frame = frame.copy()
+        scale = frame.shape[1] / w
         h, w = frame.shape[:2]
         if cfg["role"] in TRACKING:
             a, b = cfg["line"]
@@ -373,18 +477,18 @@ class Camera:
             cv2.arrowedLine(frame, (round(mx), round(my)), tip, YELLOW, 3, tipLength=0.4)
             cv2.putText(frame, "IN", (tip[0] + 6, tip[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.6, YELLOW, 2)
         for track_id, (x1, y1, x2, y2) in (dets if SHOW_BOXES else ()):
+            x1, y1, x2, y2 = x1 * scale, y1 * scale, x2 * scale, y2 * scale
             cv2.rectangle(frame, (round(x1), round(y1)), (round(x2), round(y2)), GREEN, 2)
             cv2.circle(frame, (round((x1 + x2) / 2), round(y2)), 4, YELLOW, -1)
             cv2.putText(frame, f"#{track_id}", (round(x1), max(20, round(y1) - 7)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, GREEN, 2)
-        label = {"inout": f"IN {counts['in']}  OUT {counts['out']}",
-                 "both": f"IN {counts['in']}  OUT {counts['out']}  PEOPLE {people}",
-                 "density": f"PEOPLE {people}"}.get(cfg["role"], "")
         cv2.putText(frame, label, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        if width and width < w:
-            frame = cv2.resize(frame, (width, round(h * width / w)), interpolation=cv2.INTER_AREA)
         ok, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, VIEW_QUALITY])
-        return jpg.tobytes() if ok else None
+        jpg = jpg.tobytes() if ok else None
+        if len(self.jpegs) > 8:   # ?w= is free-form: keep the cache small
+            self.jpegs.clear()
+        self.jpegs[width] = (key, jpg)
+        return jpg
 
     def snapshot(self):
         with self.lock:
@@ -429,6 +533,9 @@ class CrowdProcess:
 
 
 class Engine:
+    relay_wake = threading.Event()   # set when a camera's connection changes: sync MediaMTX now instead of at the next 20 s tick
+    relay_down = False
+
     def __init__(self):
         self.lock = threading.Lock()
         data = json.loads(CONFIG_PATH.read_text())
@@ -442,12 +549,60 @@ class Engine:
             if cfg["id"] in self.cameras:
                 raise ValueError(f"Duplicate camera id {cfg['id']}")
             cam = Camera(cfg, raw.get("source") or f"{self.mediamtx}/{cfg['id']}", i)
+            cam.hub_base, cam.hub_native = self.mediamtx, cam.source.startswith(self.mediamtx + "/")
             cam.conn = validated_connection(raw.get("connection") or {})
             self.cameras[cfg["id"]] = cam
         self.rate_times = deque(maxlen=60)
         self.crowd_model = "loading"
+        self.warnings = []
+
+    def sync_relay(self):
+        """Register website-entered cameras with MediaMTX, then point analysis at them. On failure fall back to reading the cameras directly."""
+        try:
+            status, listing = hub_call("GET", "/v3/config/paths/list?itemsPerPage=1000")
+            if status != 200 or not listing:
+                raise RuntimeError(f"MediaMTX API answered HTTP {status}")
+            existing = {item["name"]: item for item in listing["items"]}
+            for cam in self.cameras.values():
+                wanted = cam.hub_sources()
+                for path, (url, on_demand) in wanted.items():
+                    hub_ensure(path, url, on_demand, existing)
+                for path in cam.registered - set(wanted):
+                    hub_call("POST", f"/v3/config/paths/delete/{path}")
+                cam.registered = set(wanted)
+                self.set_hub(cam, bool(wanted) and time.monotonic() >= cam.hub_retry_at)
+            if self.relay_down:
+                log.info("MediaMTX control API reachable again")
+            self.relay_down = False
+        except (OSError, RuntimeError, ValueError) as exc:
+            if not self.relay_down:
+                log.warning("MediaMTX unavailable (%s): reading cameras directly", exc)
+            self.relay_down = True
+            for cam in self.cameras.values():
+                self.set_hub(cam, False)
+        now = time.monotonic()
+        for cam in self.cameras.values():   # the API answers but the stream does not arrive (wrong address, MediaMTX cannot reach the camera): go direct
+            if cam.hub and now - max(cam.frame_at, cam.hub_since) > 15:
+                log.warning("%s: no video from MediaMTX for 15 s, reading the camera directly for 10 min", cam.cfg["name"])
+                cam.hub_retry_at = now + 600
+                self.set_hub(cam, False)
+
+    @staticmethod
+    def set_hub(cam, on):
+        if cam.hub != on:
+            cam.hub, cam.hub_since = on, time.monotonic()
+            cam.url_version += 1   # the capture thread reconnects to the new address
+
+    def relay_loop(self):
+        while True:
+            self.relay_wake.wait(20)
+            self.relay_wake.clear()
+            self.sync_relay()
 
     def start(self):
+        if RELAY_API:
+            self.sync_relay()   # before the capture threads start, so they connect once, to the right address
+            threading.Thread(target=self.relay_loop, name="relay", daemon=True).start()
         for cam in self.cameras.values():
             threading.Thread(target=cam.capture, name=f"cap-{cam.cfg['id']}", daemon=True).start()
         self.pick_lock = threading.Lock()
@@ -456,6 +611,38 @@ class Engine:
             threading.Thread(target=self.infer_loop, name=f"inference-{k}", daemon=True).start()
         for k in range(CROWD_WORKERS):
             threading.Thread(target=self.crowd_loop, name=f"crowd-{k}", daemon=True).start()
+        threading.Thread(target=self.health_loop, name="health", daemon=True).start()
+
+    def health_loop(self):
+        """Every HEALTH_S: say what is wrong and why (offline, slow source, small picture, reconnects, overloaded CPU)."""
+        last, t0 = {cid: (c.grabs, c.reconnects) for cid, c in self.cameras.items()}, time.monotonic()
+        while True:
+            time.sleep(HEALTH_S)
+            now = time.monotonic()
+            found, span = [], now - t0
+            for cid, cam in self.cameras.items():
+                grabs, reconnects = last.get(cid, (cam.grabs, cam.reconnects))
+                last[cid] = cam.grabs, cam.reconnects
+                if cam.cfg["role"] == "off" or now - t0 < HEALTH_S:
+                    continue
+                name = cam.cfg["name"]
+                if cam.status != "live":
+                    found.append(f"{name}: offline (check IP, password and stream path)")
+                    continue
+                fps = (cam.grabs - grabs) / span
+                if fps < 8:
+                    found.append(f"{name}: camera sends only {fps:.0f} fps (network, or the camera's frame-rate setting)")
+                if cam.size and cam.size[0] < 640:
+                    found.append(f"{name}: picture is {cam.size[0]}x{cam.size[1]}; use a sub-stream of at least 640x360")
+                if cam.reconnects - reconnects >= 3:
+                    found.append(f"{name}: reconnected {cam.reconnects - reconnects} times (unstable link)")
+                if cam.cfg["role"] in TRACKING and cam.times and cam.rate() < 5:
+                    found.append(f"{name}: line counting at {cam.rate():.1f} checks/s, below 5 (CPU short: add cores or detector workers)")
+                if cam.cfg["role"] in DENSITY and cam.counted_at and now - cam.counted_at > 2 * CROWD_INTERVAL + 10:
+                    found.append(f"{name}: head count is {now - cam.counted_at:.0f} s old (CPU short: add crowd workers)")
+            t0, self.warnings = now, found[:20]
+            for line in found:
+                log.warning("health: %s", line)
 
     def pick_detector_job(self):
         """Next (kind, camera) for a detector worker, marked busy. Overdue head counts go first so they are never starved by gates."""
@@ -593,7 +780,7 @@ class Engine:
                            "peak_camera": peak["name"] if peak else None,
                            "online": sum(c["status"] == "live" for c in cams),
                            "total": len(cams), "infer_per_s": self.infer_rate(),
-                           "crowd_model": self.crowd_model}}
+                           "crowd_model": self.crowd_model, "warnings": self.warnings}}
 
 
 engine = None
@@ -688,7 +875,11 @@ def list_cameras():
 
 @app.get("/api/cameras/<cam_id>")
 def get_camera(cam_id):
-    return jsonify(detail(cam_or_404(cam_id)))
+    cam = cam_or_404(cam_id)
+    if time.monotonic() > cam.viewed_until:
+        cam.detect_due = 0.0                  # count right away when the viewer opens
+    cam.viewed_until = time.monotonic() + 3   # the viewer polls this: head counts every 2 s while it is open
+    return jsonify(detail(cam))
 
 
 @app.post("/api/cameras/<cam_id>/config")
@@ -707,7 +898,8 @@ def set_config(cam_id):
         if updated["role"] != cam.cfg["role"]:
             cam.tracker, cam.dets, cam.people, cam.visible, cam.due = None, [], 0, 0, 0.0
             cam.counted_at, cam.crowd_due, cam.detect_due = None, 0.0, 0.0
-            cam.yolo_n = cam.crowd_total = None
+            cam.yolo_n = cam.crowd_total = cam.crowd_raw = None
+            cam.crowd_hist.clear()
             cam.times.clear()  # old-role rate history would trigger a false "too slow"
             cam.counter.forget_tracks()
         cam.cfg = updated
@@ -774,6 +966,7 @@ def save_sources():
             with cam.lock:
                 cam.tracker, cam.dets, cam.frame, cam.status = None, [], None, "starting"
         engine.save()
+    engine.relay_wake.set()
     return jsonify(saved=len(updates), cameras=[source_row(c) for c in engine.cameras.values()])
 
 
@@ -789,6 +982,28 @@ def test_source():
         return jsonify(ok=False, message="Enter the camera or NVR IP address first.")
     ok, message = probe(connection_url(conn))
     return jsonify(ok=ok, message=message)
+
+
+@app.route("/webrtc/<path:rest>", methods=["POST", "DELETE"])
+def webrtc(rest):
+    """WHEP (WebRTC video) signalling to MediaMTX, behind this app's login. Only the offer/answer passes here; the video flows browser <-> MediaMTX."""
+    m = re.fullmatch(r"([A-Za-z0-9_-]{1,64})/whep(/[0-9a-f-]{36})?", rest)
+    cam = engine.cameras.get(m.group(1).removesuffix("_hd")) if m else None
+    if not WHEP_URL or cam is None:
+        abort(404)
+    req = urllib.request.Request(f"{WHEP_URL}/{rest}", method=request.method, data=request.get_data() or None,
+                                 headers={"Content-Type": request.content_type or "application/sdp"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as res:
+            status, body, headers = res.status, res.read(), res.headers
+    except urllib.error.HTTPError as exc:
+        status, body, headers = exc.code, exc.read(), exc.headers
+    except OSError:
+        abort(502)
+    out = Response(body, status=status, mimetype=headers.get("Content-Type", "application/sdp"), headers={"Cache-Control": "no-store"})
+    if headers.get("Location"):
+        out.headers["Location"] = "/webrtc/" + headers["Location"].split("://", 1)[-1].split("/", 1)[-1].lstrip("/")
+    return out
 
 
 def jpeg_response(jpg):
@@ -812,16 +1027,21 @@ def stream(cam_id):
     cam = cam_or_404(cam_id)
 
     def frames():
-        last, sent = -1, 0.0
+        last, gap, ready_at = -1, 0.8 / VIEW_FPS, 0.0
         cam.detect_due = 0.0   # count right away when the viewer opens
         while True:
             now = time.monotonic()
             cam.watch_until = now + 3        # keeps the camera decoding every frame while this stream is open
-            if cam.frame_seq == last or now - sent < 1 / VIEW_FPS * 0.8:
+            with cam.lock:
+                recent = list(cam.recent)
+                if not recent and cam.frame is not None:  # first pass: nothing buffered yet, show the latest frame
+                    recent = [(0.0, cam.frame_seq, cam.frame)]
+            item = next_playout(recent, last, now, VIEW_DELAY) if now >= ready_at else None
+            if item is None:
                 time.sleep(0.004)
                 continue
-            last, sent = cam.frame_seq, now
-            jpg = cam.render(VIEW_WIDTH)
+            last, ready_at = item[1], now + gap   # frames keep the camera's own rhythm; a burst is spread at least `gap` apart
+            jpg = cam.render(VIEW_WIDTH, item)
             if jpg:
                 yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpg + b"\r\n"
 

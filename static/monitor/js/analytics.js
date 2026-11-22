@@ -25,7 +25,7 @@ function makeTile(c) {
   el.className = "tile"; el.dataset.id = c.id;
   el.innerHTML = `<div class="tile__header"><span class="tile__name"></span><div class="tile__meta">
       <span class="tile__zone"></span><span class="tile__loc"></span><span class="tile__role"></span><span class="tile__status-dot"></span></div></div>
-    <div class="tile__body"><img class="tile__img" alt=""><div class="tile__placeholder"></div></div>
+    <div class="tile__body"><video class="tile__video" muted playsinline></video><img class="tile__img" alt=""><div class="tile__placeholder"></div></div>
     <div class="tile__metrics">
       <div class="metric"><small></small><strong></strong></div><div class="metric"><small></small><strong></strong></div>
       <div class="metric"><small></small><strong></strong></div><div class="metric"><small></small><strong></strong></div></div>`;
@@ -34,7 +34,7 @@ function makeTile(c) {
   el.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openModal(c.id); } });
   observer.observe(el);
   grid.appendChild(el);
-  const t = {el, img: $(".tile__img", el), loading: false};
+  const t = {el, img: $(".tile__img", el), video: $(".tile__video", el), loading: false, stop: null, retryAt: 0, cam: c};
   tiles.set(c.id, t);
   return t;
 }
@@ -52,6 +52,7 @@ function metricsFor(c) {
 
 function updateTile(t, c) {
   const el = t.el;
+  t.cam = c;
   el.dataset.status = c.status; el.dataset.role = c.role; el.dataset.level = c.level || ""; el.dataset.loc = c.location;
   text(el, ".tile__name", c.name); text(el, ".tile__zone", c.zone); text(el, ".tile__loc", c.location);
   const slow = tracks(c) && c.status === "live" && c.fps < 0.8 * c.target_fps;
@@ -102,7 +103,7 @@ function render() {
   $("#t-peak").textContent = fmt(totals.peak_density);
   $("#t-peak-cam").textContent = totals.peak_camera ? totals.peak_camera + " · people / m²" : "people / m²";
   $("#t-online").textContent = `${totals.online}`; $("#t-total").textContent = `of ${totals.total}`;
-  $("#infer").textContent = `Gate tracking ${totals.infer_per_s}/s · Crowd model: ${totals.crowd_model}`;
+  $("#infer").textContent = `Gate tracking ${totals.infer_per_s}/s · Crowd model: ${totals.crowd_model}` + (totals.warnings.length ? ` · ⚠ ${totals.warnings[0]}` + (totals.warnings.length > 1 ? ` (+${totals.warnings.length - 1} more)` : "") : "");
   if (openId) updateLive(cameras.find(c => c.id === openId));
 }
 
@@ -113,12 +114,34 @@ async function poll() {
 // Tiles show a refreshed snapshot (browsers cap ~6 connections/host, so 40 live MJPEG streams would stall).
 function refreshImages() {
   for (const [id, t] of tiles) {
-    if (t.loading || !inView.has(id) || t.el.dataset.status !== "live" || t.el.classList.contains("hidden")) continue;
+    if (t.loading || t.el.dataset.rtc === "1" || !inView.has(id) || t.el.dataset.status !== "live" || t.el.classList.contains("hidden")) continue;
     t.loading = true;
     const probe = new Image();
     probe.onload = () => { t.img.src = probe.src; t.loading = false; };
     probe.onerror = () => { t.loading = false; };
     probe.src = `/api/cameras/${id}/frame.jpg?w=480&t=${Date.now()}`;
+  }
+}
+
+// Live video in the grid: WebRTC for the tiles on screen (at most MAX_RTC at once, none while a camera is open).
+// A tile whose video cannot start keeps its refreshed snapshot and tries again after 30 s.
+const MAX_RTC = 16;
+function stopTile(t) { if (t.stop) t.stop(); t.stop = null; t.el.dataset.rtc = ""; }
+function manageRtc() {
+  let running = 0;
+  for (const [id, t] of tiles) {
+    const want = !openId && t.cam && t.cam.play && t.cam.status === "live" && inView.has(id) && !t.el.classList.contains("hidden");
+    if (!want && t.stop) stopTile(t);
+    if (t.stop) running++;
+  }
+  for (const [id, t] of tiles) {
+    if (running >= MAX_RTC) break;
+    if (t.stop || Date.now() < t.retryAt || openId || !t.cam || !t.cam.play || t.cam.status !== "live" || !inView.has(id) || t.el.classList.contains("hidden")) continue;
+    running++;
+    t.stop = playWhep(t.video, t.cam.play, (ev, why) => {
+      if (ev === "playing") t.el.dataset.rtc = "1";
+      else { console.warn(`[video] ${id}: ${why}; using snapshots`); t.stop = null; t.el.dataset.rtc = ""; t.retryAt = Date.now() + 30000; }
+    });
   }
 }
 
@@ -169,6 +192,7 @@ const msg = t => { $("#m-msg").textContent = t; };
 
 function updateLive(c) {
   if (!c) return;
+  drawHud(c);
   const cells = $("#p-live").children;
   const slow = tracks(c) && c.status === "live" && c.fps < 0.8 * c.target_fps;
   const parts = [];
@@ -216,7 +240,8 @@ async function openModal(id) {
   openId = id;
   $("#m-panel").innerHTML = panelHTML;
   $("#modal").classList.remove("hidden");
-  $("#m-live").src = `/api/cameras/${id}/stream.mjpg`;
+  startViewer(id);
+  liveTimer = setInterval(async () => { try { const d = await api(`/api/cameras/${id}`); updateLive(d); } catch (e) { /* next tick */ } }, 700);
   $("#f-role").onchange = () => showRole(val("f-role"));
   $("#b-save").onclick = () => save().then(() => msg("Saved.")).catch(e => msg(e.message));
   $("#b-reset").onclick = () => api(`/api/cameras/${id}/reset-counts`, {}).then(() => msg("Counts reset.")).catch(e => msg(e.message));
@@ -234,7 +259,7 @@ function closeModal() {
   if (document.fullscreenElement) document.exitFullscreen();
   if (pseudo) setPseudo(false);
   endDraw(); openId = null;
-  $("#m-live").src = "data:,";   // drops the MJPEG connection
+  stopViewer(); clearInterval(liveTimer);
   $("#modal").classList.add("hidden");
 }
 $("#m-close").onclick = closeModal; $("#m-backdrop").onclick = closeModal;
@@ -258,7 +283,7 @@ const clamp = v => Math.max(0, Math.min(1, v));
 
 function endDraw() {
   drawMode = null; points = []; line = null;
-  $("#m-live").style.display = "block"; stage.style.display = "none"; overlay.innerHTML = ""; overlay.classList.remove("edit");
+  setLive(true); stage.style.display = "none"; overlay.innerHTML = ""; overlay.classList.remove("edit");
   stage.querySelectorAll(".handle, .in-label").forEach(el => el.remove());
   if ($("#b-cancel")) { $("#b-cancel").hidden = true; $("#p-line-edit").hidden = true; }
 }
@@ -272,7 +297,7 @@ async function showSnapshot(mode) {
   photo.src = photoUrl;
   endDraw();
   drawMode = mode;
-  $("#m-live").style.display = "none"; stage.style.display = "block"; $("#b-cancel").hidden = false;
+  setLive(false); stage.style.display = "block"; $("#b-cancel").hidden = false;
 }
 
 async function startDraw(mode) {      // mode "person": click head, then feet
@@ -357,6 +382,79 @@ async function saveLine() {
   } catch (e) { msg(e.message); }
 }
 
+// ---------- Live viewer: WebRTC from MediaMTX (the camera's main stream when it has one), MJPEG when that cannot start ----------
+const hdBroken = new Set();   // cameras whose main stream would not play: sub-stream only
+let viewerStop = null, hdStop = null, viewerMode = "mjpeg", liveTimer = null;
+const hud = $("#m-hud"), vSub = $("#m-video"), vHd = $("#m-video-hd");
+let video = vSub;   // the one on screen: the sub-stream first (starts at once), the main stream once that plays
+
+function setLive(show) {   // the live picture (video or MJPEG) on / off, e.g. off while the snapshot editor is open
+  for (const v of [vSub, vHd]) v.style.display = show && viewerMode === "rtc" && v === video ? "block" : "none";
+  $("#m-live").style.display = show && viewerMode !== "rtc" ? "block" : "none";
+  hud.hidden = !(show && viewerMode === "rtc");
+  fitHud();
+}
+
+function stopViewer() {
+  if (viewerStop) viewerStop();
+  if (hdStop) hdStop();
+  viewerStop = hdStop = null; viewerMode = "mjpeg"; video = vSub;
+  $("#m-live").src = "data:,";   // drops the MJPEG connection
+  vSub.style.display = vHd.style.display = "none"; hud.hidden = true;
+}
+
+function startViewer(id) {
+  stopViewer();
+  const c = data && data.cameras.find(x => x.id === id);
+  const sub = c && c.play, hd = c && c.play_hd;
+  const mjpeg = () => { viewerMode = "mjpeg"; $("#m-live").src = `/api/cameras/${id}/stream.mjpg`; setLive(true); };
+  const start = (path, el, onPlaying, onFail) => playWhep(el, path, (ev, why) => {
+    if (openId !== id) return;
+    if (ev === "playing") onPlaying(); else { console.warn(`[video] ${path}: ${why}`); onFail(); }
+  });
+  if (!sub && !hd) return mjpeg();
+  viewerStop = start(sub || hd, vSub, () => {
+    viewerMode = "rtc"; video = vSub; $("#m-live").src = "data:,"; setLive(true);
+    // The main stream is pulled from the camera on demand and may not be playable (H.265, B-frames): try it behind the picture
+    // that already shows, and swap only once it plays.
+    // "playing" fires before MediaMTX rejects a stream it cannot carry (B-frames), so swap only after 2 s of steady frames,
+    // and come back to the sub-stream (for good, this session) if the main stream drops later.
+    if (sub && hd && !hdBroken.has(id)) hdStop = start(hd, vHd, () => setTimeout(() => {
+      if (!hdStop || openId !== id || vHd.getVideoPlaybackQuality().totalVideoFrames < 25) return;
+      video = vHd; setLive(true); if (viewerStop) viewerStop(); viewerStop = null;
+    }, 2000), () => { hdStop = null; hdBroken.add(id); if (video === vHd && openId === id) startViewer(id); });
+  }, () => { viewerStop = null; mjpeg(); });
+}
+
+// The HUD (count and count line) sits exactly over the picture: the video is letterboxed, so measure where the picture is.
+function fitHud() {
+  if (hud.hidden || !video.videoWidth) return;
+  const bw = video.clientWidth, bh = video.clientHeight, s = Math.min(bw / video.videoWidth, bh / video.videoHeight);
+  const w = video.videoWidth * s, h = video.videoHeight * s;
+  Object.assign(hud.style, {left: video.offsetLeft + (bw - w) / 2 + "px", top: video.offsetTop + (bh - h) / 2 + "px", width: w + "px", height: h + "px"});
+  hud.dataset.w = w; hud.dataset.h = h;
+  if (lastHud) drawHud(lastHud);
+}
+
+let lastHud = null;
+function drawHud(c) {
+  lastHud = c;
+  if (hud.hidden) return;
+  $("#m-hud-label").textContent = c.role === "inout" ? `IN ${c.in}  OUT ${c.out}` : c.role === "both" ? `IN ${c.in}  OUT ${c.out}  PEOPLE ${c.people}` : c.role === "density" ? `PEOPLE ${c.people}` : "";
+  const svg = $("#m-hud-svg"), w = +hud.dataset.w, h = +hud.dataset.h, cfg = c.config || cur;
+  svg.innerHTML = "";
+  if (!tracks(c) || !cfg || !w) return;
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  const [[ax, ay], [bx, by]] = cfg.line.map(p => [p[0] * w, p[1] * h]);
+  const nx = ay - by, ny = bx - ax, n = Math.hypot(nx, ny) || 1, sign = cfg.in_side === "positive" ? 1 : -1;   // the side LineCounter calls "positive"
+  const dx = sign * nx / n, dy = sign * ny / n, mx = (ax + bx) / 2, my = (ay + by) / 2, tx = mx + dx * 45, ty = my + dy * 45;
+  const head = `${tx - dx * 14 - dy * 8},${ty - dy * 14 + dx * 8} ${tx},${ty} ${tx - dx * 14 + dy * 8},${ty - dy * 14 - dx * 8}`;
+  svg.innerHTML = `<g stroke="#ffe066" stroke-width="2.5" fill="none" stroke-linecap="round"><line x1="${ax}" y1="${ay}" x2="${bx}" y2="${by}"/><line x1="${mx}" y1="${my}" x2="${tx}" y2="${ty}"/><polyline points="${head}"/></g>
+    <text x="${tx + dx * 8 + 4}" y="${ty + dy * 8 + 5}" fill="#ffe066" font-size="14" font-weight="800" stroke="#000" stroke-width="3" paint-order="stroke">IN</text>`;
+}
+new ResizeObserver(fitHud).observe($(".full-view-body"));
+for (const v of [vSub, vHd]) { v.addEventListener("loadedmetadata", fitHud); v.addEventListener("resize", fitHud); }
+
 // ---------- Full screen ----------
 const videoArea = $(".full-view-body"), fsIcon = $("#m-fs-icon");
 const ICON_ENTER = "M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5", ICON_EXIT = "M3 8h5V3M21 8h-5V3M3 16h5v5M21 16h-5v5";
@@ -390,6 +488,7 @@ function wake() {            // show the controls, hide them again after 2.5 s w
 
 $("#m-fs").onclick = toggleFullscreen;
 $("#m-live").addEventListener("dblclick", toggleFullscreen);
+vSub.addEventListener("dblclick", toggleFullscreen); vHd.addEventListener("dblclick", toggleFullscreen);
 videoArea.addEventListener("mousemove", wake);
 document.addEventListener("fullscreenchange", () => setFsState(!!document.fullscreenElement));
 document.addEventListener("keydown", e => {
@@ -524,4 +623,5 @@ $("#b-preset").onchange = e => $("#b-custom-wrap").classList.toggle("hidden", e.
 document.addEventListener("keydown", e => { if (e.key === "Escape" && !srcModal.classList.contains("hidden")) srcModal.classList.add("hidden"); });
 
 poll(); setInterval(poll, 2000);
-setInterval(refreshImages, 3000); setTimeout(refreshImages, 600);
+setInterval(refreshImages, 1000); setTimeout(refreshImages, 600);
+setInterval(manageRtc, 1000);
