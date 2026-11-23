@@ -73,7 +73,8 @@ button { font: inherit; }
 .tile[data-status="offline"] .tile__status-dot { background: var(--error-red); }
 @keyframes pulse { 50% { opacity: .45; } }
 .tile__body { background: #080d16; position: relative; aspect-ratio: 16 / 9; display: flex; align-items: center; justify-content: center; }
-.tile__img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.tile__body { overflow: hidden; }   /* the picture never sizes the tile: every tile body stays 16:9 whatever the camera's aspect */
+.tile__img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
 .tile__video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #080d16; display: none; }
 .tile[data-rtc="1"] .tile__video { display: block; }
 .tile__placeholder { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #64748b; font-size: 12px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
