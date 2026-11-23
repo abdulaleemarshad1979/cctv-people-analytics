@@ -57,13 +57,20 @@ function playWhep(video, path, onEvent) {
 // H.265 too where the browser decodes it, buffered ~1 s so frames come out evenly. Same contract as playWhep.
 function playHls(video, path, onEvent) {
   const src = `/hls/${encodeURIComponent(path)}/index.m3u8`;
-  let dead = false, playing = false, hls = null;
+  let dead = false, playing = false, hls = null, lastTime = -1, still = 0;
   const timer = setTimeout(() => !playing && fail("no video within 25 s"), 25000);
+  const watchdog = setInterval(() => {
+    if (!playing || document.hidden) return;
+    still = video.currentTime === lastTime ? still + 1 : 0;
+    lastTime = video.currentTime;
+    if (still >= 4) fail("picture froze");
+  }, 2000);
 
   function stop() {
     if (dead) return;
     dead = true;
     clearTimeout(timer);
+    clearInterval(watchdog);
     video.onplaying = video.onerror = null;
     if (hls) hls.destroy();
     video.removeAttribute("src"); video.load();

@@ -547,6 +547,7 @@ class Camera:
             crowd_total = self.crowd_raw
         out = {"id": cfg["id"], "name": cfg["name"], "zone": cfg["zone"], "location": cfg["location"], "role": cfg["role"],
                "status": status, "people": people, "visible": visible, "fps": self.rate(),
+               "resolution": f"{self.size[0]}x{self.size[1]}" if self.size else None,
                "play": self.play_path(), "play_hd": self.play_path(hd=True),
                "hls": self.play_path() if HLS_URL and engine.hls_on else None,
                "hls_h264": f"{cfg['id']}_view" if HLS_URL and engine.hls_on and FFMPEG and self.hub_base else None,
@@ -674,6 +675,8 @@ class Engine:
             cam.conn = validated_connection(raw.get("connection") or {})
             self.cameras[cfg["id"]] = cam
         self.rate_times = deque(maxlen=60)
+        self.active_head_jobs = 0
+        self.gates_since_head = 0
         self.crowd_model = "loading"
         self.warnings = []
 
@@ -773,22 +776,26 @@ class Engine:
                 log.warning("health: %s", line)
 
     def pick_detector_job(self):
-        """Next (kind, camera) for a detector worker, marked busy. Overdue head counts go first so they are never starved by gates."""
+        """Reserve detector capacity for gates while still servicing due density counts."""
         now = time.monotonic()
         with self.pick_lock:
             cams = [c for c in self.cameras.values() if not c.busy and c.frame is not None]
             heads = [c for c in cams if c.cfg["role"] in DENSITY and c.detect_due <= now]
             gates = [c for c in cams if c.cfg["role"] in TRACKING and c.frame_seq != c.infer_seq and c.due <= now]
-            late = [c for c in heads if now - c.detect_due > 5]
-            if late:
-                job = ("count", min(late, key=lambda c: c.detect_due))
-            elif gates:
+            # Density checks can become overdue together. Let at most one run
+            # alongside gate jobs, and give it a turn every eight gate checks.
+            if gates and (not heads or self.active_head_jobs or self.gates_since_head < 8):
                 job = ("gate", min(gates, key=lambda c: c.due))
-            elif heads:
+            elif heads and not self.active_head_jobs:
                 job = ("count", min(heads, key=lambda c: c.detect_due))
             else:
                 return None
             job[1].busy = True
+            if job[0] == "count":
+                self.active_head_jobs += 1
+                self.gates_since_head = 0
+            else:
+                self.gates_since_head += 1
             return job
 
     def infer_loop(self):
@@ -820,7 +827,10 @@ class Engine:
                 else:
                     cam.detect_due = time.monotonic() + 30
             finally:
-                cam.busy = False
+                with self.pick_lock:
+                    cam.busy = False
+                    if kind == "count":
+                        self.active_head_jobs -= 1
 
     def pick_crowd_job(self):
         now = time.monotonic()

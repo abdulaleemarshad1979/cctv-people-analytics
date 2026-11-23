@@ -3,6 +3,8 @@
 import math
 import time
 
+TRACK_MAX_GAP_S = 1.25  # after a detection gap, another nearby person must not inherit the old crossing side
+
 
 class LineCounter:
     def __init__(self, line, in_side="positive"):
@@ -52,7 +54,7 @@ class LineCounter:
         """Person boxes (x1, y1, x2, y2) in pixels -> [(track id, box)]. Same flow as active_pixel_html_camera_site:
         each foot point joins the nearest track (<= 0.2 of the frame) and counts once when its path crosses the finite line."""
         now = time.monotonic() if now is None else now
-        self.tracks = {i: t for i, t in self.tracks.items() if now - t["seen"] < 5.0}
+        self.tracks = {i: t for i, t in self.tracks.items() if now - t["seen"] < TRACK_MAX_GAP_S}
         points = [((x1 + x2) / (2 * width), y2 / height) for x1, y1, x2, y2 in boxes]
         pairs = sorted((math.dist(p, t["point"]), k, i) for k, p in enumerate(points)
                        for i, t in self.tracks.items() if math.dist(p, t["point"]) <= 0.2)

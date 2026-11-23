@@ -1,7 +1,7 @@
 "use strict";
 const $ = (sel, root = document) => root.querySelector(sel);
 const grid = $("#grid");
-const tiles = new Map();      // camera id -> {el, img, loading}
+const tiles = new Map();      // camera id -> playback state and latest snapshot
 const inView = new Set();     // ids of tiles currently on screen
 let data = null, filter = "all", zone = "", loc = "", openId = null, drawMode = null, points = [], photoUrl = null, cur = null, line = null;
 
@@ -34,7 +34,8 @@ function makeTile(c) {
   el.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openModal(c.id); } });
   observer.observe(el);
   grid.appendChild(el);
-  const t = {el, img: $(".tile__img", el), video: $(".tile__video", el), loading: false, stop: null, retryAt: 0, cam: c};
+  const t = {el, img: $(".tile__img", el), video: $(".tile__video", el), loading: false,
+    stop: null, retryAt: 0, generation: 0, mode: null, cam: c};
   tiles.set(c.id, t);
   return t;
 }
@@ -117,7 +118,7 @@ const TILE_MS = 300;
 function refreshImages() {
   const now = Date.now();
   for (const [id, t] of tiles) {
-    if (openId || t.loading || now - (t.asked || 0) < TILE_MS || t.el.dataset.rtc === "1" || !inView.has(id) || t.el.dataset.status !== "live" || t.el.classList.contains("hidden")) continue;
+    if (openId || t.loading || now - (t.asked || 0) < TILE_MS || t.el.dataset.playing === "1" || !inView.has(id) || t.el.dataset.status !== "live" || t.el.classList.contains("hidden")) continue;
     t.loading = true; t.asked = now;
     const probe = new Image();
     probe.onload = () => { t.img.src = probe.src; t.loading = false; };
@@ -126,25 +127,58 @@ function refreshImages() {
   }
 }
 
-// Live video in the grid: WebRTC for the tiles on screen (at most MAX_RTC at once, none while a camera is open).
-// A tile whose video cannot start keeps its refreshed snapshot and tries again after 30 s.
-const MAX_RTC = 16;
-function stopTile(t) { if (t.stop) t.stop(); t.stop = null; t.el.dataset.rtc = ""; }
-function manageRtc() {
+// Use the same LL-HLS stream as the opened viewer. WebRTC and the shared H.264
+// copy are fallbacks; only visible tiles play, and only a bounded number may
+// request CPU encoding when the NVR stream cannot be decoded in the browser.
+const MAX_LIVE_TILES = 16, MAX_H264_TILES = 8;
+function stopTile(t) {
+  t.generation++;
+  if (t.stop) t.stop();
+  t.stop = null; t.mode = null; t.el.dataset.playing = "";
+}
+function startTile(t) {
+  const id = t.cam.id, generation = ++t.generation;
+  const modes = [t.cam.hls && ["hls", t.cam.hls], t.cam.play && ["rtc", t.cam.play],
+    t.cam.hls_h264 && ["h264", t.cam.hls_h264]].filter(Boolean);
+  const attempt = i => {
+    if (generation !== t.generation) return;
+    if (i === modes.length) {
+      t.stop = null; t.mode = null; t.el.dataset.playing = "";
+      t.retryAt = Date.now() + 30000;
+      return;
+    }
+    const [mode, path] = modes[i];
+    if (mode === "h264" && [...tiles.values()].filter(x => x.mode === "h264").length >= MAX_H264_TILES) {
+      attempt(i + 1);
+      return;
+    }
+    t.mode = mode;
+    t.stop = (mode === "rtc" ? playWhep : playHls)(t.video, path, (event, why) => {
+      if (generation !== t.generation) return;
+      if (event === "playing") {
+        t.el.dataset.playing = "1";
+        t.img.removeAttribute("src");
+      } else {
+        console.warn(`[video] ${id} ${mode}: ${why}`);
+        t.stop = null; t.mode = null; t.el.dataset.playing = "";
+        attempt(i + 1);
+      }
+    });
+  };
+  attempt(0);
+}
+function manageTiles() {
   let running = 0;
   for (const [id, t] of tiles) {
-    const want = !openId && t.cam && t.cam.play && t.cam.status === "live" && inView.has(id) && !t.el.classList.contains("hidden");
+    const want = !openId && t.cam && t.cam.status === "live" && inView.has(id) && !t.el.classList.contains("hidden");
     if (!want && t.stop) stopTile(t);
     if (t.stop) running++;
   }
   for (const [id, t] of tiles) {
-    if (running >= MAX_RTC) break;
-    if (t.stop || Date.now() < t.retryAt || openId || !t.cam || !t.cam.play || t.cam.status !== "live" || !inView.has(id) || t.el.classList.contains("hidden")) continue;
+    if (running >= MAX_LIVE_TILES) break;
+    if (t.stop || Date.now() < t.retryAt || openId || !t.cam || t.cam.status !== "live" || !inView.has(id) || t.el.classList.contains("hidden") || !(t.cam.hls || t.cam.play)) continue;
     running++;
-    t.stop = playWhep(t.video, t.cam.play, (ev, why) => {
-      if (ev === "playing") t.el.dataset.rtc = "1";
-      else { console.warn(`[video] ${id}: ${why}; using snapshots`); t.stop = null; t.el.dataset.rtc = ""; t.retryAt = Date.now() + 30000; }
-    });
+    startTile(t);
   }
 }
 
@@ -175,7 +209,7 @@ const panelHTML = `
     <div id="p-line-edit" hidden><p class="note">Drag the round handles to move or extend an end, or drag the line to move it. Save when done.</p>
       <button class="btn" id="b-line-save">Save line</button><button class="btn ghost" id="b-flip">Flip IN direction</button>
       <button class="btn ghost" id="b-extend">Extend to edges</button><button class="btn ghost" id="b-line-default">Reset line</button></div>
-    <p class="note">Every camera has its own line; it is used when the role is In / Out or Both. Place the line across the walking path. A person counts when their feet (yellow dot) cross it. The yellow IN arrow on the video shows which way counts as IN; switch A/B if it points the wrong way. Counts reset only on request or server restart.</p></div>
+    <p class="note">Press Edit count line to pause on a large picture. Drag either yellow circle to the entrance boundary, drag the line to move both ends, then press Save line. The arrow points toward IN. Place the line across the walking path, away from stalls or places where people stand. Counts reset only on request or server restart.</p></div>
   <div id="p-density"><h3>Area &amp; calibration</h3>
     <div class="row"><div><label for="f-vfov">Vertical FOV (°)</label><input id="f-vfov" type="number" step="0.1"></div>
       <div><label for="f-hfov">Horizontal FOV (°)</label><input id="f-hfov" type="number" step="0.1"></div>
@@ -199,7 +233,8 @@ function updateLive(c) {
   const cells = $("#p-live").children;
   const slow = tracks(c) && c.status === "live" && c.fps < 0.8 * c.target_fps;
   const parts = [];
-  if (tracks(c)) parts.push(`Tracking ${c.fps}/s (target ${c.target_fps}/s)` + (slow ? " – too slow, crossings may be missed" : ""));
+  if (tracks(c)) parts.push(`Tracking ${c.fps}/s (target ${c.target_fps}/s)` + (slow ? " – too slow, crossings may be missed" : ""),
+    c.resolution ? `Input ${c.resolution}` + (Number(c.resolution.split("x")[0]) < 640 ? " – too small for reliable counting" : "") : "Input pending");
   if (dense(c)) parts.push(c.counted_ago == null ? "Crowd count pending" : `Crowd count ${c.counted_ago} s ago`,
     `detector ${c.detected ?? "–"} · crowd model ${c.crowd_model_count ?? "–"}`);
   $("#p-rate").textContent = parts.join(" · ");
@@ -288,7 +323,17 @@ function endDraw() {
   drawMode = null; points = []; line = null;
   setLive(true); stage.style.display = "none"; overlay.innerHTML = ""; overlay.classList.remove("edit");
   stage.querySelectorAll(".handle, .in-label").forEach(el => el.remove());
+  if ($("#b-line")) $("#b-line").textContent = "Edit count line";
   if ($("#b-cancel")) { $("#b-cancel").hidden = true; $("#p-line-edit").hidden = true; }
+}
+
+function fitStage() {
+  if (!photo.naturalWidth || !photo.naturalHeight) return;
+  const body = $(".full-view-body"), aspect = photo.naturalWidth / photo.naturalHeight;
+  const width = Math.min(body.clientWidth, body.clientHeight * aspect);
+  stage.style.width = width + "px";
+  stage.style.height = width / aspect + "px";
+  drawLine();
 }
 
 async function showSnapshot(mode) {
@@ -298,9 +343,11 @@ async function showSnapshot(mode) {
   if (photoUrl) URL.revokeObjectURL(photoUrl);
   photoUrl = URL.createObjectURL(await res.blob());
   photo.src = photoUrl;
+  if (photo.decode) await photo.decode();
   endDraw();
   drawMode = mode;
   setLive(false); stage.style.display = "block"; $("#b-cancel").hidden = false;
+  fitStage();
 }
 
 async function startDraw(mode) {      // mode "person": click head, then feet
@@ -328,7 +375,8 @@ async function startLine() {
       line = o.map(p => [p[0] + mx, p[1] + my]);
     });
     $("#p-line-edit").hidden = false;
-    msg("Drag the handles or the line, then Save line.");
+    $("#b-line").textContent = "Editing count line";
+    msg("Drag the large yellow circles to place the line across the entrance, then press Save line.");
     drawLine();
   } catch (e) { msg(e.message); }
 }
@@ -341,7 +389,9 @@ function drag(el, move) {
     const [sx, sy] = pos(e);
     const onMove = ev => { const [x, y] = pos(ev); move(orig, x, y, x - sx, y - sy); drawLine(); };
     el.addEventListener("pointermove", onMove);
-    el.addEventListener("pointerup", () => el.removeEventListener("pointermove", onMove), {once: true});
+    const done = () => { el.removeEventListener("pointermove", onMove); el.removeEventListener("pointerup", done); el.removeEventListener("pointercancel", done); };
+    el.addEventListener("pointerup", done);
+    el.addEventListener("pointercancel", done);
   });
 }
 
@@ -512,8 +562,8 @@ document.addEventListener("keydown", e => {
       && !["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement.tagName)) toggleFullscreen();
 });
 
-photo.addEventListener("load", drawLine);
-window.addEventListener("resize", drawLine);
+photo.addEventListener("load", fitStage);
+new ResizeObserver(fitStage).observe($(".full-view-body"));
 
 stage.onclick = async event => {         // camera-height marking only; the line uses the handles above
   if (drawMode !== "person") return;
@@ -640,4 +690,4 @@ document.addEventListener("keydown", e => { if (e.key === "Escape" && !srcModal.
 
 poll(); setInterval(poll, 2000);
 setInterval(refreshImages, 100);
-setInterval(manageRtc, 1000);
+setInterval(manageTiles, 1000);

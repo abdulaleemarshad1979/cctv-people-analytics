@@ -51,8 +51,29 @@ class AppTests(unittest.TestCase):
     def test_both_role_reports_crossings_and_density(self):
         c = cam(role="both", area_m2=10)
         c.people = 5
+        c.size = (352, 288)
         stats = c.stats(self.thresholds)
         self.assertEqual((stats["in"], stats["out"], stats["level"]), (0, 0, "safe"))
+        self.assertEqual(stats["resolution"], "352x288")
+
+    def test_overdue_head_counts_leave_capacity_for_gate_tracking(self):
+        engine = app.Engine.__new__(app.Engine)
+        gate1, gate2, head1, head2 = (cam(id="g1", role="inout"), cam(id="g2", role="inout"),
+                                      cam(id="h1", role="density"), cam(id="h2", role="density"))
+        engine.cameras = {c.cfg["id"]: c for c in (gate1, gate2, head1, head2)}
+        engine.pick_lock = app.threading.Lock()
+        engine.active_head_jobs = engine.gates_since_head = 0
+        for c in engine.cameras.values():
+            c.frame = object()
+            c.frame_seq = 1
+            c.due = c.detect_due = app.time.monotonic() - 10
+        self.assertEqual(engine.pick_detector_job(), ("gate", gate1))
+        engine.gates_since_head = 8
+        kind, head = engine.pick_detector_job()
+        self.assertEqual((kind, head), ("count", head1))
+        self.assertEqual(engine.pick_detector_job(), ("gate", gate2))
+        self.assertEqual(engine.active_head_jobs, 1)
+        self.assertIsNone(engine.pick_detector_job())  # no second head check takes a gate worker
 
     def test_location_must_be_inside_or_outside(self):
         with self.assertRaises(ValueError):

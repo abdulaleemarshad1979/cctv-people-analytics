@@ -43,6 +43,18 @@ class AnalyticsTests(unittest.TestCase):
         self.walk(counter, (60,), at=6)
         self.assertEqual(counter.counts()["in"], 0)
 
+    def test_new_person_after_detection_gap_does_not_inherit_old_crossing(self):
+        counter = LineCounter([[0.1, 0.5], [0.9, 0.5]])
+        self.walk(counter, (40,), at=0)
+        self.walk(counter, (60,), at=2)  # someone else near the same x, after the first person left
+        self.assertEqual(counter.counts()["in"], 0)
+
+    def test_single_dropped_detection_still_tracks_crossing(self):
+        counter = LineCounter([[0.1, 0.5], [0.9, 0.5]])
+        self.walk(counter, (40,), at=0)
+        self.walk(counter, (60,), at=0.6)
+        self.assertEqual(counter.counts()["in"], 1)
+
     def test_person_height_calibration(self):
         def image_y(ratio):
             return (1 + math.tan(math.atan(ratio) - math.radians(30)) /
