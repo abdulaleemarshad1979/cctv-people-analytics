@@ -31,6 +31,7 @@ services:
       LOGIN_PASSWORD: ${LOGIN_PASSWORD:-admin123}
       INOUT_FPS: ${INOUT_FPS:-10}
       INOUT_IMGSZ: ${INOUT_IMGSZ:-640}
+      INOUT_CONFIDENCE: ${INOUT_CONFIDENCE:-0.35}   # lower (e.g. 0.25) if walkers at the line are missed at night
       CROWD_INTERVAL_S: ${CROWD_INTERVAL_S:-30}
       DETECT_INTERVAL_S: ${DETECT_INTERVAL_S:-30}
       INOUT_WORKERS: ${INOUT_WORKERS:-}     # blank = by core count

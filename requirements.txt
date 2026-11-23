@@ -1,5 +1,4 @@
 Flask>=3.0,<4.0
 opencv-python-headless>=4.10,<6.0
 ultralytics>=8.4.0,<9.0
-lap>=0.5.12   # ByteTrack (gate counting) needs it; ultralytics would pip-install it at runtime, which fails in the non-root container
 gunicorn>=22.0

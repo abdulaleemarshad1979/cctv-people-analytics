@@ -112,10 +112,13 @@ async function poll() {
 }
 
 // Tiles show a refreshed snapshot (browsers cap ~6 connections/host, so 40 live MJPEG streams would stall).
+// Each tile asks for its next picture only once the last one arrived, at most every TILE_MS: a slow link lowers the rate, never adds delay.
+const TILE_MS = 300;
 function refreshImages() {
+  const now = Date.now();
   for (const [id, t] of tiles) {
-    if (t.loading || t.el.dataset.rtc === "1" || !inView.has(id) || t.el.dataset.status !== "live" || t.el.classList.contains("hidden")) continue;
-    t.loading = true;
+    if (openId || t.loading || now - (t.asked || 0) < TILE_MS || t.el.dataset.rtc === "1" || !inView.has(id) || t.el.dataset.status !== "live" || t.el.classList.contains("hidden")) continue;
+    t.loading = true; t.asked = now;
     const probe = new Image();
     probe.onload = () => { t.img.src = probe.src; t.loading = false; };
     probe.onerror = () => { t.loading = false; };
@@ -623,5 +626,5 @@ $("#b-preset").onchange = e => $("#b-custom-wrap").classList.toggle("hidden", e.
 document.addEventListener("keydown", e => { if (e.key === "Escape" && !srcModal.classList.contains("hidden")) srcModal.classList.add("hidden"); });
 
 poll(); setInterval(poll, 2000);
-setInterval(refreshImages, 1000); setTimeout(refreshImages, 600);
+setInterval(refreshImages, 100);
 setInterval(manageRtc, 1000);

@@ -43,7 +43,8 @@ app = Flask(__name__, static_folder=str(ROOT / "static"))
 CONFIG_PATH = Path(os.getenv("ANALYTICS_CONFIG", str(ROOT / "cameras.json")))
 MODEL_PATH = os.getenv("PEOPLE_MODEL", str(ROOT / "yolov8n.pt"))
 INOUT_IMGSZ = int(os.getenv("INOUT_IMGSZ", "640"))   # detector size: native resolution for a 640x360 sub-stream
-# Crossing tracker (YOLO + ByteTrack): drops crossings below ~5 checks/s (measured on a walker
+INOUT_CONF = float(os.getenv("INOUT_CONFIDENCE", "0.35"))   # gate detector confidence, as active_pixel_html_camera_site
+# Crossing counter (YOLO + nearest-point matching): drops crossings below ~5 checks/s (measured on a walker
 # crossing 10 % of the frame per second). Crowd count (DM-Count + CSRNet fusion, ~2.9 core-seconds per frame):
 # one count per density camera every CROWD_INTERVAL_S seconds.
 # This server is dedicated to the cameras, so the cores are split between the two kinds of work by core count
@@ -55,8 +56,10 @@ CROWD_WORKERS = int(os.getenv("CROWD_WORKERS") or max(1, round(CORES * 0.25)))
 TRACK_FPS = float(os.getenv("INOUT_FPS", "10"))
 CROWD_INTERVAL = float(os.getenv("CROWD_INTERVAL_S", "30"))
 SHOW_BOXES = os.getenv("SHOW_BOXES", "0") == "1"   # boxes and track ids on the video; off by default (cleaner, cheaper)
-VIEW_WIDTH = int(os.getenv("VIEW_WIDTH", "1280"))   # live viewer JPEG width and quality
-VIEW_QUALITY = int(os.getenv("VIEW_QUALITY", "85"))
+# Live viewer JPEG width and quality. Measured on the site's night pictures: 1280 @ 85 = ~280 KB a frame (~55 Mbit/s at 25 fps),
+# more than many remote links carry; 960 @ 70 = ~120 KB. Tiles (480 px) are ~36 KB at 70.
+VIEW_WIDTH = int(os.getenv("VIEW_WIDTH", "960"))
+VIEW_QUALITY = int(os.getenv("VIEW_QUALITY", "70"))
 VIEW_FPS = float(os.getenv("VIEW_FPS", "25"))        # max viewer frame rate; match the camera (25) so no frames are dropped unevenly
 VIEW_DELAY = float(os.getenv("VIEW_DELAY_MS", "0")) / 1000   # MJPEG fallback only: hold frames this long so a burst from the network is spread out (100-150 on a bursty link; adds that much delay; not measured to help)
 # Same detector settings as CCTV_MONITOR (conf 0.30, iou 0.55, agnostic NMS). The crowd model counts every density camera
@@ -226,7 +229,7 @@ class Camera:
         self.conn, self.url_version = None, 0   # conn = IP/credentials set from the website; wins over source
         self.lock = threading.RLock()
         self.counter = LineCounter(cfg["line"], cfg["in_side"])
-        self.tracker = None
+        self.error = None   # why the last line-counting check failed, shown on the website (the server log is out of reach)
         self.frame = None
         self.frame_seq = self.infer_seq = 0
         self.dets, self.people, self.visible = [], 0, 0   # people = crowd count (tracked count for inout)
@@ -312,7 +315,6 @@ class Camera:
                 file_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
                 self.size, self.reconnects = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))), self.reconnects + 1
                 with self.lock:
-                    self.tracker = None
                     self.counter.forget_tracks()
             if not cap.grab():
                 failures += 1
@@ -343,26 +345,21 @@ class Camera:
                             self.recent.append((now, self.frame_seq, frame))
 
     # ---- inference -----------------------------------------------------------------
-    def infer(self, model, tracker_args):
-        """Track people for line crossings (inout / both)."""
-        from ultralytics.trackers.byte_tracker import BYTETracker
+    def infer(self, model):
+        """Line crossings (inout / both): detect people, then LineCounter matches them to the last check's and counts."""
         with self.lock:
             frame, seq, role = self.frame, self.frame_seq, self.cfg["role"]
         h, w = frame.shape[:2]
         started = time.monotonic()
-        boxes = model.predict(frame, classes=[0], conf=0.12, iou=0.8, imgsz=INOUT_IMGSZ, verbose=False)[0].boxes.cpu().numpy()  # conf/iou as in Count peoplr
+        boxes = model.predict(frame, classes=[0], conf=INOUT_CONF, imgsz=INOUT_IMGSZ, verbose=False)[0].boxes.xyxy.cpu().numpy()
         now = time.monotonic()
         with self.lock:
             if self.cfg["role"] != role:  # role changed mid-inference; drop the result
                 return
             self.infer_seq = seq
-            if self.tracker is None:
-                args = type(tracker_args)(**{**vars(tracker_args), "track_buffer": max(2, int(TRACK_FPS * 3))})
-                self.tracker = BYTETracker(args)
-            tracks = self.tracker.update(boxes, frame)
-            self.dets = [(int(t[4]), tuple(map(float, t[:4]))) for t in tracks]
-            self.counter.update(self.dets, w, h, now)
+            self.dets = self.counter.update([tuple(map(float, b)) for b in boxes], w, h, now)
             self.visible = len(self.dets)
+            self.error = None
             if role == "inout":
                 self.people = self.visible
             self.times.append(now)
@@ -432,7 +429,7 @@ class Camera:
                "play": self.play_path(), "play_hd": self.play_path(hd=True),
                "target_fps": TRACK_FPS if cfg["role"] in TRACKING else 0}
         if cfg["role"] in TRACKING:
-            out.update(counts)
+            out.update(counts, error=self.error)
         if cfg["role"] in DENSITY:
             area = cfg["area_m2"] or ground_area(cfg)
             density = round(people / area, 2) if area else None
@@ -619,7 +616,7 @@ class Engine:
         while True:
             time.sleep(HEALTH_S)
             now = time.monotonic()
-            found, span = [], now - t0
+            found, offline, span = [], [], now - t0
             for cid, cam in self.cameras.items():
                 grabs, reconnects = last.get(cid, (cam.grabs, cam.reconnects))
                 last[cid] = cam.grabs, cam.reconnects
@@ -627,8 +624,10 @@ class Engine:
                     continue
                 name = cam.cfg["name"]
                 if cam.status != "live":
-                    found.append(f"{name}: offline (check IP, password and stream path)")
+                    offline.append(f"{name}: offline (check IP, password and stream path)")
                     continue
+                if cam.size and cam.size[0] > 1920:
+                    found.append(f"{name}: picture is {cam.size[0]}x{cam.size[1]}; decoding it costs the CPU several 1080p streams (a sub-stream path is lighter)")
                 fps = (cam.grabs - grabs) / span
                 if fps < 8:
                     found.append(f"{name}: camera sends only {fps:.0f} fps (network, or the camera's frame-rate setting)")
@@ -636,10 +635,13 @@ class Engine:
                     found.append(f"{name}: picture is {cam.size[0]}x{cam.size[1]}; use a sub-stream of at least 640x360")
                 if cam.reconnects - reconnects >= 3:
                     found.append(f"{name}: reconnected {cam.reconnects - reconnects} times (unstable link)")
-                if cam.cfg["role"] in TRACKING and cam.times and cam.rate() < 5:
+                if cam.cfg["role"] in TRACKING and (cam.error or not cam.times):
+                    found.insert(0,f"{name}: line counting {'failed: ' + cam.error if cam.error else 'has not run yet'}")
+                elif cam.cfg["role"] in TRACKING and cam.rate() < 5:
                     found.append(f"{name}: line counting at {cam.rate():.1f} checks/s, below 5 (CPU short: add cores or detector workers)")
                 if cam.cfg["role"] in DENSITY and cam.counted_at and now - cam.counted_at > 2 * CROWD_INTERVAL + 10:
                     found.append(f"{name}: head count is {now - cam.counted_at:.0f} s old (CPU short: add crowd workers)")
+            found += offline   # last: with many unplugged cameras they would fill the 20 shown
             t0, self.warnings = now, found[:20]
             for line in found:
                 log.warning("health: %s", line)
@@ -665,8 +667,6 @@ class Engine:
 
     def infer_loop(self):
         from ultralytics import YOLO
-        from ultralytics.utils import IterableSimpleNamespace, YAML
-        from ultralytics.utils.checks import check_yaml
         log.info("Loading people model %s", MODEL_PATH)
         os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 10)  # per thread on Linux: inference yields the cores to video decode and the viewer
         model = YOLO(MODEL_PATH)  # one model per worker thread: ultralytics predictors are not thread-safe
@@ -674,7 +674,6 @@ class Engine:
         import torch
         model.predict(np.zeros((64, 64, 3), np.uint8), imgsz=INOUT_IMGSZ, verbose=False)  # ultralytics resets torch to 7 threads on its first predict
         torch.set_num_threads(1)  # per thread: 1 thread = ~48 ms/frame at 480 px, and the workers share the cores
-        tracker_args = IterableSimpleNamespace(**YAML.load(check_yaml("bytetrack.yaml")))
         while True:
             job = self.pick_detector_job()
             if job is None:
@@ -683,13 +682,14 @@ class Engine:
             kind, cam = job
             try:
                 if kind == "gate":
-                    cam.infer(model, tracker_args)
+                    cam.infer(model)
                     self.rate_times.append(time.monotonic())
                 else:
                     cam.detect(model)
-            except Exception:
+            except Exception as exc:
                 log.exception("%s failed for %s", "Inference" if kind == "gate" else "Head count", cam.cfg["id"])
                 if kind == "gate":
+                    cam.error = f"{type(exc).__name__}: {exc}"[:200]
                     cam.due = time.monotonic() + 5
                 else:
                     cam.detect_due = time.monotonic() + 30
@@ -896,7 +896,7 @@ def set_config(cam_id):
         if (updated["line"], updated["in_side"]) != (cam.cfg["line"], cam.cfg["in_side"]):
             cam.counter.set_line(updated["line"], updated["in_side"])
         if updated["role"] != cam.cfg["role"]:
-            cam.tracker, cam.dets, cam.people, cam.visible, cam.due = None, [], 0, 0, 0.0
+            cam.dets, cam.people, cam.visible, cam.due = [], 0, 0, 0.0
             cam.counted_at, cam.crowd_due, cam.detect_due = None, 0.0, 0.0
             cam.yolo_n = cam.crowd_total = cam.crowd_raw = None
             cam.crowd_hist.clear()
@@ -964,7 +964,7 @@ def save_sources():
             cam.conn = conn
             cam.url_version += 1
             with cam.lock:
-                cam.tracker, cam.dets, cam.frame, cam.status = None, [], None, "starting"
+                cam.dets, cam.frame, cam.status = [], None, "starting"
         engine.save()
     engine.relay_wake.set()
     return jsonify(saved=len(updates), cameras=[source_row(c) for c in engine.cameras.values()])

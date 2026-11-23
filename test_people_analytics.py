@@ -5,17 +5,42 @@ from people_analytics import LineCounter, estimate_camera_geometry, estimate_hei
 
 
 class AnalyticsTests(unittest.TestCase):
+    @staticmethod
+    def walk(counter, path, x=50, at=0):
+        """One person whose feet are at y (percent of a 100x100 frame) at each check."""
+        for i, y in enumerate(path):
+            counter.update([(x - 10, y - 30, x + 10, y)], 100, 100, at + i)
+
     def test_two_people_cross_separately_once(self):
         counter = LineCounter([[0.1, 0.5], [0.9, 0.5]])
-        counter.update([(1, (10, 10, 30, 40)), (2, (40, 10, 60, 42))], 100, 100, 1)
-        counter.update([(1, (10, 40, 30, 70)), (2, (40, 40, 60, 72))], 100, 100, 2)
-        counter.update([(1, (10, 42, 30, 75)), (2, (40, 42, 60, 77))], 100, 100, 3)
-        self.assertEqual(counter.counts()["in"], 2)
-        self.assertEqual(counter.counts()["out"], 0)
+        for at, (y1, y2) in enumerate(((40, 42), (52, 55), (60, 70), (62, 75))):
+            counter.update([(10, y1 - 30, 30, y1), (60, y2 - 30, 80, y2)], 100, 100, at)
+        self.assertEqual(counter.counts(), {"in": 2, "out": 0, "occupancy_change": 2})
 
-    def test_new_track_on_far_side_does_not_count(self):
+    def test_in_then_out_and_direction_flip(self):
         counter = LineCounter([[0.1, 0.5], [0.9, 0.5]])
-        counter.update([(5, (10, 40, 30, 75))], 100, 100, 1)
+        self.walk(counter, (30, 42, 60))
+        self.walk(counter, (60, 40), at=3)
+        self.assertEqual((counter.counts()["in"], counter.counts()["out"]), (1, 1))
+        flipped = LineCounter([[0.1, 0.5], [0.9, 0.5]], "negative")
+        self.walk(flipped, (30, 42, 60))
+        self.assertEqual((flipped.counts()["in"], flipped.counts()["out"]), (0, 1))
+
+    def test_new_person_on_far_side_and_hovering_do_not_count(self):
+        counter = LineCounter([[0.1, 0.5], [0.9, 0.5]])
+        counter.update([(10, 45, 30, 75)], 100, 100, 1)
+        self.walk(counter, (49.5, 50.5, 49.5, 50.5), x=80, at=2)   # inside the dead-band: no side change
+        self.assertEqual(counter.counts()["in"] + counter.counts()["out"], 0)
+
+    def test_crossing_beyond_the_line_end_does_not_count(self):
+        counter = LineCounter([[0.2, 0.5], [0.8, 0.5]])
+        self.walk(counter, (40, 60), x=5)
+        self.assertEqual(counter.counts()["in"], 0)
+
+    def test_person_gone_5_s_is_a_new_person(self):
+        counter = LineCounter([[0.1, 0.5], [0.9, 0.5]])
+        self.walk(counter, (40,))
+        self.walk(counter, (60,), at=6)
         self.assertEqual(counter.counts()["in"], 0)
 
     def test_person_height_calibration(self):

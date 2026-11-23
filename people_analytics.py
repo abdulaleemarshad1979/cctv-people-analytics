@@ -11,7 +11,7 @@ class LineCounter:
         self.in_side = in_side
         self.in_count = 0
         self.out_count = 0
-        self.tracks = {}
+        self.tracks, self.next_id = {}, 1
 
     @staticmethod
     def validate_line(line):
@@ -43,33 +43,53 @@ class LineCounter:
         return {"in": self.in_count, "out": self.out_count,
                 "occupancy_change": self.in_count - self.out_count}
 
-    def update(self, detections, width, height, now=None):
-        """Count a stable track once when its foot crosses the finite line segment."""
+    def _side(self, point):
+        a, b = self.line
+        distance = _cross(a, b, point) / math.dist(a, b)
+        return 1 if distance > 0.012 else -1 if distance < -0.012 else 0
+
+    def update(self, boxes, width, height, now=None):
+        """Person boxes (x1, y1, x2, y2) in pixels -> [(track id, box)]. Same flow as active_pixel_html_camera_site:
+        each foot point joins the nearest track (<= 0.2 of the frame) and counts once when its path crosses the finite line."""
         now = time.monotonic() if now is None else now
-        (ax, ay), (bx, by) = self.line
-        dx, dy = bx - ax, by - ay
-        length = math.hypot(dx, dy)
-        for track_id, (x1, y1, x2, y2) in detections:
-            x, y = (x1 + x2) / (2 * width), y2 / height
-            along = ((x - ax) * dx + (y - ay) * dy) / (length * length)
-            signed = (dx * (y - ay) - dy * (x - ax)) / length
-            side = 1 if signed > 0.025 else -1 if signed < -0.025 else 0
-            prior = self.tracks.get(track_id)
-            if prior and side and prior["side"] and side != prior["side"]:
-                # The segment bounds stop someone crossing its infinite extension.
-                if -0.05 <= along <= 1.05 and -0.05 <= prior["along"] <= 1.05:
-                    entered = (side == 1) == (self.in_side == "positive")
-                    if entered:
+        self.tracks = {i: t for i, t in self.tracks.items() if now - t["seen"] < 5.0}
+        points = [((x1 + x2) / (2 * width), y2 / height) for x1, y1, x2, y2 in boxes]
+        pairs = sorted((math.dist(p, t["point"]), k, i) for k, p in enumerate(points)
+                       for i, t in self.tracks.items() if math.dist(p, t["point"]) <= 0.2)
+        matches, used = {}, set()
+        for _, k, i in pairs:   # closest pairs first, each point and track used once
+            if k not in matches and i not in used:
+                matches[k] = i
+                used.add(i)
+        out = []
+        for k, point in enumerate(points):
+            side, ident = self._side(point), matches.get(k)
+            if ident is None:
+                ident, self.next_id = self.next_id, self.next_id + 1
+                self.tracks[ident] = {"point": point, "stable": point, "side": side, "seen": now, "crossed": 0.0}
+            else:
+                t = self.tracks[ident]
+                if (side and t["side"] and side != t["side"] and now - t["crossed"] >= 0.5
+                        and _segments_intersect(t["stable"], point, *self.line)):
+                    if (side == 1) == (self.in_side == "positive"):
                         self.in_count += 1
                     else:
                         self.out_count += 1
-            if side:
-                self.tracks[track_id] = {"side": side, "along": along, "seen": now}
-            elif prior:
-                prior["seen"] = now
-        for track_id in list(self.tracks):
-            if now - self.tracks[track_id]["seen"] > 5:
-                del self.tracks[track_id]
+                    t["crossed"] = now
+                t["point"], t["seen"] = point, now
+                if side:   # a point on the line keeps the last clear side, so hovering there never counts
+                    t["side"], t["stable"] = side, point
+            out.append((ident, boxes[k]))
+        return out
+
+
+def _cross(a, b, p):
+    return (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
+
+
+def _segments_intersect(a, b, c, d):
+    """Whether the path a->b crosses the finite counting line c-d."""
+    return _cross(a, b, c) * _cross(a, b, d) <= 0 and _cross(c, d, a) * _cross(c, d, b) <= 0
 
 
 def _ground_ratio(y_fraction, vfov_deg, tilt_deg):
