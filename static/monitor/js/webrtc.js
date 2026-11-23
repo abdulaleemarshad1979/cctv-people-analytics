@@ -52,3 +52,41 @@ function playWhep(video, path, onEvent) {
   })().catch(e => fail(String(e.message || e)));
   return stop;
 }
+
+// LL-HLS playback of a MediaMTX path through this app's /hls proxy (the login still protects it): the camera's own video,
+// H.265 too where the browser decodes it, buffered ~1 s so frames come out evenly. Same contract as playWhep.
+function playHls(video, path, onEvent) {
+  const src = `/hls/${encodeURIComponent(path)}/index.m3u8`;
+  let dead = false, playing = false, hls = null;
+  const timer = setTimeout(() => !playing && fail("no video within 15 s"), 15000);
+
+  function stop() {
+    if (dead) return;
+    dead = true;
+    clearTimeout(timer);
+    video.onplaying = video.onerror = null;
+    if (hls) hls.destroy();
+    video.removeAttribute("src"); video.load();
+  }
+  function fail(why) { if (!dead) { stop(); onEvent("failed", why); } }
+
+  video.onplaying = () => { if (!playing && !dead) { playing = true; onEvent("playing"); } };
+  if (window.Hls && Hls.isSupported()) {
+    hls = new Hls({lowLatencyMode: true, backBufferLength: 10, manifestLoadingMaxRetry: 6, manifestLoadingRetryDelay: 1000});
+    hls.on(Hls.Events.ERROR, (_, d) => {
+      if (!d.fatal) return;
+      if (playing && d.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();   // a decode hiccup after it played: recover in place
+      else fail(d.details);   // e.g. a codec this browser cannot decode (H.265 without hardware support)
+    });
+    hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
+    hls.loadSource(src);
+    hls.attachMedia(video);
+  } else if (video.canPlayType("application/vnd.apple.mpegurl")) {   // Safari / iOS play HLS themselves
+    video.onerror = () => fail("video error");
+    video.src = src;
+    video.play().catch(() => {});
+  } else {
+    setTimeout(() => fail("HLS not supported"), 0);
+  }
+  return stop;
+}

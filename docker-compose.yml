@@ -25,6 +25,7 @@ services:
     environment:
       MEDIAMTX_API: http://mediamtx:9997          # the app registers cameras here and reads them from MediaMTX (one NVR session each)
       MEDIAMTX_WEBRTC_URL: http://mediamtx:8889   # browsers get live video over WebRTC, MJPEG when that cannot start
+      MEDIAMTX_HLS_URL: http://mediamtx:8888      # smooth live video (LL-HLS) through the web port, tried first
       DM_COUNT_WEIGHTS: /weights/model_nwpu.pth
       CSRNET_WEIGHTS: /weights/csrnet_shtechA.pth
       LOGIN_USER: ${LOGIN_USER:-admin}

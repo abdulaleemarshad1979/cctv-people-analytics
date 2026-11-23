@@ -13,6 +13,7 @@ import logging
 import math
 import os
 import re
+import shutil
 import statistics
 import subprocess
 import sys
@@ -70,6 +71,14 @@ SPARSE_MAX = int(os.getenv("SPARSE_MAX", "10"))
 # MEDIAMTX_API / MEDIAMTX_WEBRTC_URL are set by docker compose; blank = off and the viewer uses the MJPEG stream.
 RELAY_API = os.getenv("MEDIAMTX_API", "").rstrip("/")
 WHEP_URL = os.getenv("MEDIAMTX_WEBRTC_URL", "").rstrip("/")
+# Live video as LL-HLS from MediaMTX, through this app's login: the camera's own H.264/H.265 passed through (no server CPU),
+# buffered ~1 s by the browser so it plays evenly. Works over the web port alone (WebRTC needs UDP/8189 open).
+HLS_URL = os.getenv("MEDIAMTX_HLS_URL", "").rstrip("/")
+HLS_SETTINGS = {"hls": True, "hlsAddress": ":8888", "hlsVariant": "lowLatency", "hlsSegmentCount": 7,
+                "hlsSegmentDuration": "1s", "hlsPartDuration": "200ms"}
+# Density cameras nobody is watching are analysed once every few seconds, so ffmpeg decodes only their keyframes:
+# ~40x less CPU than decoding every frame of a 5 MP H.265 stream (measured), left to the gate counters instead.
+FFMPEG = shutil.which("ffmpeg")
 HEALTH_S = float(os.getenv("HEALTH_CHECK_S", "30"))
 DETECT_INTERVAL = float(os.getenv("DETECT_INTERVAL_S", "30"))   # detector count per density camera; every 2 s while someone watches it
 COUNT_WINDOW = int(os.getenv("COUNT_TEMPORAL_WINDOW", "1"))   # median of the last N head counts (30 s apart) drops one-off glitches but delays a real surge; 1 = off, as CCTV_MONITOR on CPU
@@ -214,6 +223,47 @@ def hub_ensure(name, url, on_demand, existing):
         raise RuntimeError(f"MediaMTX refused path {name}: HTTP {status}")
 
 
+class KeyframeReader:
+    """cv2.VideoCapture look-alike that decodes keyframes only (ffmpeg -skip_frame nokey), one PPM frame per grab()."""
+
+    def __init__(self, url):
+        rtsp = ["-rtsp_transport", "tcp", "-timeout", "10000000"] if url.lower().startswith("rtsp://") else []   # stalled camera -> ffmpeg exits -> reconnect
+        self.proc = subprocess.Popen([FFMPEG, "-nostdin", "-loglevel", "error", *rtsp, "-skip_frame", "nokey", "-i", url,
+                                      "-an", "-fps_mode", "passthrough", "-f", "image2pipe", "-c:v", "ppm", "-"],
+                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        self.frame = None
+
+    def isOpened(self):
+        return self.proc.poll() is None
+
+    def get(self, prop):
+        return 0
+
+    def set(self, prop, value):
+        return False
+
+    def grab(self):
+        import numpy as np
+        out = self.proc.stdout
+        head = [out.readline() for _ in range(3)]   # P6 / width height / 255
+        try:
+            w, h = map(int, head[1].split())
+        except ValueError:
+            return False
+        data = out.read(w * h * 3)
+        if len(data) != w * h * 3:
+            return False
+        self.frame = cv2.cvtColor(np.frombuffer(data, np.uint8).reshape(h, w, 3), cv2.COLOR_RGB2BGR)
+        return True
+
+    def retrieve(self):
+        return self.frame is not None, self.frame
+
+    def release(self):
+        self.proc.kill()
+        self.proc.wait()
+
+
 def next_playout(recent, last, now, delay, max_backlog=3):
     """Frame (arrived, seq, image) the viewer shows now, or None. Plays unseen frames in order once they are `delay` old,
     one per tick, so a burst of frames from the network comes out evenly; if more than max_backlog wait, jump to the newest."""
@@ -246,6 +296,7 @@ class Camera:
         self.frame_at = self.hub_since = self.hub_retry_at = self.viewed_until = 0.0   # last frame / hub switched on / do not retry the hub before / camera open in the viewer
         self.grabs = self.reconnects = 0   # decoded frames / re-opens: the health check turns these into source fps and drop-outs
         self.size = None                   # (width, height) the camera sends
+        self.keyframes = False             # reading keyframes only (KeyframeReader): an idle density camera
         self.recent = deque(maxlen=10)   # (arrived, seq, frame) while watched: the viewer's de-jitter buffer
         self.jpegs = {}                  # width -> (key, jpeg): viewers and tiles of one frame share one encode
 
@@ -295,6 +346,11 @@ class Camera:
                     cap.release()
                     cap = None
                 is_file = not self.url().lower().startswith(STREAM_PREFIXES)
+            # MJPEG viewer open (watch_until) needs every frame; HLS viewers get video from MediaMTX and need nothing from here
+            keyframes = bool(FFMPEG) and role == "density" and not is_file and time.monotonic() >= self.watch_until
+            if cap is not None and keyframes != self.keyframes:
+                cap.release()
+                cap = None
             if role == "off":
                 if cap is not None:
                     cap.release()
@@ -304,7 +360,9 @@ class Camera:
                 continue
             if cap is None:
                 # timeouts: a hung NVR must end in a reconnect, not a frozen frame that still says "live"
-                cap = cv2.VideoCapture(self.url(), cv2.CAP_FFMPEG, [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 8000, cv2.CAP_PROP_READ_TIMEOUT_MSEC, 10000])
+                self.keyframes = keyframes
+                cap = KeyframeReader(self.url()) if keyframes else cv2.VideoCapture(
+                    self.url(), cv2.CAP_FFMPEG, [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 8000, cv2.CAP_PROP_READ_TIMEOUT_MSEC, 10000])
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 if not cap.isOpened():
                     cap.release()
@@ -313,7 +371,7 @@ class Camera:
                     pause(5)
                     continue
                 file_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-                self.size, self.reconnects = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))), self.reconnects + 1
+                self.reconnects += 1
                 with self.lock:
                     self.counter.forget_tracks()
             if not cap.grab():
@@ -338,7 +396,7 @@ class Camera:
             if watched or now - last >= min(0.5, 1 / FPS[role]) * 0.6:  # otherwise only the frames analysis can use; 0.6 because frame ticks (40 ms at 25 fps) would round the rate down
                 ok, frame = cap.retrieve()
                 if ok:
-                    last = now
+                    last, self.size = now, (frame.shape[1], frame.shape[0])
                     with self.lock:
                         self.frame, self.frame_seq, self.status, self.frame_at = frame, self.frame_seq + 1, "live", now
                         if watched:
@@ -427,6 +485,7 @@ class Camera:
         out = {"id": cfg["id"], "name": cfg["name"], "zone": cfg["zone"], "location": cfg["location"], "role": cfg["role"],
                "status": status, "people": people, "visible": visible, "fps": self.rate(),
                "play": self.play_path(), "play_hd": self.play_path(hd=True),
+               "hls": self.play_path() if HLS_URL and engine.hls_on else None,
                "target_fps": TRACK_FPS if cfg["role"] in TRACKING else 0}
         if cfg["role"] in TRACKING:
             out.update(counts, error=self.error)
@@ -532,6 +591,7 @@ class CrowdProcess:
 class Engine:
     relay_wake = threading.Event()   # set when a camera's connection changes: sync MediaMTX now instead of at the next 20 s tick
     relay_down = False
+    hls_on = False
 
     def __init__(self):
         self.lock = threading.Lock()
@@ -560,6 +620,8 @@ class Engine:
             if status != 200 or not listing:
                 raise RuntimeError(f"MediaMTX API answered HTTP {status}")
             existing = {item["name"]: item for item in listing["items"]}
+            if HLS_URL and not self.hls_on:   # an older config/mediamtx.yml has HLS off: switch it on here
+                self.hls_on = hub_call("PATCH", "/v3/config/global/patch", HLS_SETTINGS)[0] == 200
             for cam in self.cameras.values():
                 wanted = cam.hub_sources()
                 for path, (url, on_demand) in wanted.items():
@@ -579,7 +641,7 @@ class Engine:
                 self.set_hub(cam, False)
         now = time.monotonic()
         for cam in self.cameras.values():   # the API answers but the stream does not arrive (wrong address, MediaMTX cannot reach the camera): go direct
-            if cam.hub and now - max(cam.frame_at, cam.hub_since) > 15:
+            if cam.hub and now - max(cam.frame_at, cam.hub_since) > (60 if cam.keyframes else 15):   # keyframes can be seconds apart
                 log.warning("%s: no video from MediaMTX for 15 s, reading the camera directly for 10 min", cam.cfg["name"])
                 cam.hub_retry_at = now + 600
                 self.set_hub(cam, False)
@@ -626,10 +688,10 @@ class Engine:
                 if cam.status != "live":
                     offline.append(f"{name}: offline (check IP, password and stream path)")
                     continue
-                if cam.size and cam.size[0] > 1920:
+                if cam.size and cam.size[0] > 1920 and not cam.keyframes:
                     found.append(f"{name}: picture is {cam.size[0]}x{cam.size[1]}; decoding it costs the CPU several 1080p streams (a sub-stream path is lighter)")
                 fps = (cam.grabs - grabs) / span
-                if fps < 8:
+                if fps < 8 and not cam.keyframes:   # keyframes only: ~1 a second is expected
                     found.append(f"{name}: camera sends only {fps:.0f} fps (network, or the camera's frame-rate setting)")
                 if cam.size and cam.size[0] < 640:
                     found.append(f"{name}: picture is {cam.size[0]}x{cam.size[1]}; use a sub-stream of at least 640x360")
@@ -1004,6 +1066,22 @@ def webrtc(rest):
     if headers.get("Location"):
         out.headers["Location"] = "/webrtc/" + headers["Location"].split("://", 1)[-1].split("/", 1)[-1].lstrip("/")
     return out
+
+
+@app.get("/hls/<cam_id>/<name>")
+def hls(cam_id, name):
+    """LL-HLS playlists and segments from MediaMTX, behind this app's login (blocking playlist reloads wait up to a few s)."""
+    if not HLS_URL or cam_id not in engine.cameras or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}\.(m3u8|mp4)", name):
+        abort(404)
+    url = f"{HLS_URL}/{cam_id}/{name}" + (f"?{request.query_string.decode()}" if request.query_string else "")
+    try:
+        with urllib.request.urlopen(url, timeout=20) as res:
+            status, body, ctype = res.status, res.read(), res.headers.get("Content-Type")
+    except urllib.error.HTTPError as exc:
+        status, body, ctype = exc.code, exc.read(), exc.headers.get("Content-Type")
+    except OSError:
+        abort(502)
+    return Response(body, status=status, mimetype=ctype or "application/octet-stream", headers={"Cache-Control": "no-store"})
 
 
 def jpeg_response(jpg):

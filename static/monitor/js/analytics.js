@@ -415,18 +415,27 @@ function startViewer(id) {
     if (openId !== id) return;
     if (ev === "playing") onPlaying(); else { console.warn(`[video] ${path}: ${why}`); onFail(); }
   });
-  if (!sub && !hd) return mjpeg();
-  viewerStop = start(sub || hd, vSub, () => {
-    viewerMode = "rtc"; video = vSub; $("#m-live").src = "data:,"; setLive(true);
-    // The main stream is pulled from the camera on demand and may not be playable (H.265, B-frames): try it behind the picture
-    // that already shows, and swap only once it plays.
-    // "playing" fires before MediaMTX rejects a stream it cannot carry (B-frames), so swap only after 2 s of steady frames,
-    // and come back to the sub-stream (for good, this session) if the main stream drops later.
-    if (sub && hd && !hdBroken.has(id)) hdStop = start(hd, vHd, () => setTimeout(() => {
-      if (!hdStop || openId !== id || vHd.getVideoPlaybackQuality().totalVideoFrames < 25) return;
-      video = vHd; setLive(true); if (viewerStop) viewerStop(); viewerStop = null;
-    }, 2000), () => { hdStop = null; hdBroken.add(id); if (video === vHd && openId === id) startViewer(id); });
-  }, () => { viewerStop = null; mjpeg(); });
+  const rtc = () => {
+    if (!sub && !hd) return mjpeg();
+    viewerStop = start(sub || hd, vSub, () => {
+      viewerMode = "rtc"; video = vSub; $("#m-live").src = "data:,"; setLive(true);
+      // The main stream is pulled from the camera on demand and may not be playable (H.265, B-frames): try it behind the picture
+      // that already shows, and swap only once it plays.
+      // "playing" fires before MediaMTX rejects a stream it cannot carry (B-frames), so swap only after 2 s of steady frames,
+      // and come back to the sub-stream (for good, this session) if the main stream drops later.
+      if (sub && hd && !hdBroken.has(id)) hdStop = start(hd, vHd, () => setTimeout(() => {
+        if (!hdStop || openId !== id || vHd.getVideoPlaybackQuality().totalVideoFrames < 25) return;
+        video = vHd; setLive(true); if (viewerStop) viewerStop(); viewerStop = null;
+      }, 2000), () => { hdStop = null; hdBroken.add(id); if (video === vHd && openId === id) startViewer(id); });
+    }, () => { viewerStop = null; mjpeg(); });
+  };
+  // Smoothest first: LL-HLS (the camera's own video, buffered), then WebRTC, then MJPEG.
+  if (!c || !c.hls) return rtc();
+  viewerStop = playHls(vSub, c.hls, (ev, why) => {
+    if (openId !== id) return;
+    if (ev === "playing") { viewerMode = "rtc"; video = vSub; $("#m-live").src = "data:,"; setLive(true); }
+    else { console.warn(`[video] HLS ${c.hls}: ${why}`); viewerStop = null; rtc(); }
+  });
 }
 
 // The HUD (count and count line) sits exactly over the picture: the video is letterboxed, so measure where the picture is.

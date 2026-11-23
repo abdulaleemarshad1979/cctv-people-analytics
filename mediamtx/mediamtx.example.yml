@@ -6,7 +6,13 @@ rtsp: yes
 rtspAddress: :8554
 rtspTransports: [tcp]
 rtmp: no
-hls: no
+# Live video for the browsers (LL-HLS), proxied by the app behind its login: the camera's own H.264/H.265, nothing re-encoded.
+hls: yes
+hlsAddress: :8888
+hlsVariant: lowLatency
+hlsSegmentCount: 7
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
 srt: no
 # Control API for the analytics app. Not published to the host; only this machine and docker networks may use it.
 api: yes

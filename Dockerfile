@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
-RUN apt-get update && apt-get install -y --no-install-recommends libglib2.0-0 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends libglib2.0-0 ffmpeg && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 # CPU-only torch keeps the image ~2 GB smaller than the default CUDA build.
 RUN pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
