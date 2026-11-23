@@ -223,6 +223,16 @@ def hub_ensure(name, url, on_demand, existing):
         raise RuntimeError(f"MediaMTX refused path {name}: HTTP {status}")
 
 
+def shrink(frame, width):
+    """Frame scaled to `width`: halved with INTER_AREA (its fast path) while still 2x too wide, then LINEAR. As smooth as
+    INTER_AREA straight to the size, which costs ~67 ms of CPU per 5 MP frame (1.7 cores at 25 fps), against ~10 ms."""
+    h, w = frame.shape[:2]
+    out = (width, round(h * width / w / 2) * 2)
+    while frame.shape[1] >= 2 * width:
+        frame = cv2.resize(frame, (frame.shape[1] // 2, frame.shape[0] // 2), interpolation=cv2.INTER_AREA)
+    return cv2.resize(frame, out, interpolation=cv2.INTER_LINEAR)
+
+
 class KeyframeReader:
     """cv2.VideoCapture look-alike that decodes keyframes only (ffmpeg -skip_frame nokey), one PPM frame per grab()."""
 
@@ -297,6 +307,7 @@ class Camera:
         self.grabs = self.reconnects = 0   # decoded frames / re-opens: the health check turns these into source fps and drop-outs
         self.size = None                   # (width, height) the camera sends
         self.keyframes = False             # reading keyframes only (KeyframeReader): an idle density camera
+        self.view_on = False               # view_loop is publishing <id>_view (H.264) to MediaMTX
         self.recent = deque(maxlen=10)   # (arrived, seq, frame) while watched: the viewer's de-jitter buffer
         self.jpegs = {}                  # width -> (key, jpeg): viewers and tiles of one frame share one encode
 
@@ -402,6 +413,58 @@ class Camera:
                         if watched:
                             self.recent.append((now, self.frame_seq, frame))
 
+    def ensure_view(self):
+        """Someone plays <id>_view: keep every frame coming and the H.264 encoder running for a few more seconds."""
+        self.watch_until = time.monotonic() + 6
+        with self.lock:
+            if self.view_on or not FFMPEG or not self.hub_base:
+                return
+            self.view_on = True
+        threading.Thread(target=self.view_loop, name=f"view-{self.cfg['id']}", daemon=True).start()
+
+    def view_loop(self):
+        """H.264 for browsers that cannot play the camera's H.265: the frames this app already decodes, shrunk to
+        VIEW_WIDTH and encoded once for every viewer (~ the cost of the MJPEG stream, at a tenth of its bandwidth).
+        Writes at a steady VIEW_FPS, repeating a frame when none is new, so the browser's clock never stalls."""
+        proc, last, small, size = None, -1, None, None   # size: (w, h) the encoder was started with
+        tick = time.monotonic()
+        try:
+            while time.monotonic() < self.watch_until:
+                now = time.monotonic()
+                with self.lock:
+                    recent = list(self.recent) or ([(0.0, self.frame_seq, self.frame)] if self.frame is not None else [])
+                item = next_playout(recent, last, now, 0)
+                if item is not None:
+                    last, small = item[1], shrink(item[2], VIEW_WIDTH)
+                    if size is None:
+                        size = small.shape[1], small.shape[0]
+                if small is not None and small.shape[1::-1] == size:   # (a reconnect may change the picture size: skip until it matches)
+                    if proc is None:
+                        proc = subprocess.Popen(
+                            [FFMPEG, "-nostdin", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "bgr24",
+                             "-s", f"{size[0]}x{size[1]}", "-framerate", str(VIEW_FPS), "-i", "-", "-an",
+                             "-c:v", "libx264", "-preset", "superfast", "-tune", "zerolatency", "-pix_fmt", "yuv420p",
+                             "-g", str(round(VIEW_FPS)), "-crf", "26", "-maxrate", "2500k", "-bufsize", "2500k",
+                             "-f", "rtsp", "-rtsp_transport", "tcp", f"{self.hub_base}/{self.cfg['id']}_view"],
+                            stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                    proc.stdin.write(small.tobytes())
+                tick += 1 / VIEW_FPS
+                if tick < now - 1:   # fell a second behind (CPU busy): restart the clock instead of rushing frames out
+                    tick = now
+                time.sleep(max(0.0, tick - time.monotonic()))
+        except OSError as exc:   # ffmpeg exited (MediaMTX down): the viewer falls back; the next request starts again
+            log.warning("%s: H.264 view stopped: %s", self.cfg["name"], exc)
+        finally:
+            if proc is not None:
+                try:
+                    proc.stdin.close()
+                except OSError:
+                    pass
+                proc.kill()
+                proc.wait()
+            with self.lock:
+                self.view_on = False
+
     # ---- inference -----------------------------------------------------------------
     def infer(self, model):
         """Line crossings (inout / both): detect people, then LineCounter matches them to the last check's and counts."""
@@ -486,6 +549,7 @@ class Camera:
                "status": status, "people": people, "visible": visible, "fps": self.rate(),
                "play": self.play_path(), "play_hd": self.play_path(hd=True),
                "hls": self.play_path() if HLS_URL and engine.hls_on else None,
+               "hls_h264": f"{cfg['id']}_view" if HLS_URL and engine.hls_on and FFMPEG and self.hub_base else None,
                "target_fps": TRACK_FPS if cfg["role"] in TRACKING else 0}
         if cfg["role"] in TRACKING:
             out.update(counts, error=self.error)
@@ -517,7 +581,7 @@ class Camera:
             return cached[1]
         h, w = frame.shape[:2]
         if width and width < w:  # shrink first: the overlay is then drawn on the pixels that are sent
-            frame = cv2.resize(frame, (width, round(h * width / w)), interpolation=cv2.INTER_AREA)
+            frame = shrink(frame, width)
         else:
             frame = frame.copy()
         scale = frame.shape[1] / w
@@ -842,7 +906,9 @@ class Engine:
                            "peak_camera": peak["name"] if peak else None,
                            "online": sum(c["status"] == "live" for c in cams),
                            "total": len(cams), "infer_per_s": self.infer_rate(),
-                           "crowd_model": self.crowd_model, "warnings": self.warnings}}
+                           "crowd_model": self.crowd_model, "warnings": self.warnings,
+                           "cpu": {"cores": CORES, "detector_workers": INOUT_WORKERS, "crowd_workers": CROWD_WORKERS,
+                                   "load": [round(x, 1) for x in os.getloadavg()]}}}
 
 
 engine = None
@@ -1071,16 +1137,25 @@ def webrtc(rest):
 @app.get("/hls/<cam_id>/<name>")
 def hls(cam_id, name):
     """LL-HLS playlists and segments from MediaMTX, behind this app's login (blocking playlist reloads wait up to a few s)."""
-    if not HLS_URL or cam_id not in engine.cameras or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}\.(m3u8|mp4)", name):
+    cam = engine.cameras.get(cam_id.removesuffix("_view"))
+    if not HLS_URL or cam is None or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}\.(m3u8|mp4)", name):
         abort(404)
+    if cam_id.endswith("_view"):   # every playlist / segment request keeps the H.264 encoder alive
+        cam.ensure_view()
     url = f"{HLS_URL}/{cam_id}/{name}" + (f"?{request.query_string.decode()}" if request.query_string else "")
-    try:
-        with urllib.request.urlopen(url, timeout=20) as res:
-            status, body, ctype = res.status, res.read(), res.headers.get("Content-Type")
-    except urllib.error.HTTPError as exc:
-        status, body, ctype = exc.code, exc.read(), exc.headers.get("Content-Type")
-    except OSError:
-        abort(502)
+    give_up = time.monotonic() + (20 if cam_id.endswith("_view") else 0)   # the H.264 copy takes a few s to start; hls.js never retries a 404
+    while True:
+        try:
+            with urllib.request.urlopen(url, timeout=20) as res:
+                status, body, ctype = res.status, res.read(), res.headers.get("Content-Type")
+        except urllib.error.HTTPError as exc:
+            status, body, ctype = exc.code, exc.read(), exc.headers.get("Content-Type")
+        except OSError:
+            abort(502)
+        if status != 404 or time.monotonic() > give_up:
+            break
+        cam.ensure_view()
+        time.sleep(0.5)
     return Response(body, status=status, mimetype=ctype or "application/octet-stream", headers={"Cache-Control": "no-store"})
 
 

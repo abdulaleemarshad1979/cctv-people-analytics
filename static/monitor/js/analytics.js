@@ -429,13 +429,17 @@ function startViewer(id) {
       }, 2000), () => { hdStop = null; hdBroken.add(id); if (video === vHd && openId === id) startViewer(id); });
     }, () => { viewerStop = null; mjpeg(); });
   };
-  // Smoothest first: LL-HLS (the camera's own video, buffered), then WebRTC, then MJPEG.
-  if (!c || !c.hls) return rtc();
-  viewerStop = playHls(vSub, c.hls, (ev, why) => {
-    if (openId !== id) return;
-    if (ev === "playing") { viewerMode = "rtc"; video = vSub; $("#m-live").src = "data:,"; setLive(true); }
-    else { console.warn(`[video] HLS ${c.hls}: ${why}`); viewerStop = null; rtc(); }
-  });
+  // Smoothest first: LL-HLS of the camera's own video (H.265 needs a browser that decodes it), then the server's
+  // H.264 copy over LL-HLS (plays everywhere), then WebRTC, then MJPEG.
+  const hls = paths => {
+    if (!paths.length) return rtc();
+    viewerStop = playHls(vSub, paths[0], (ev, why) => {
+      if (openId !== id) return;
+      if (ev === "playing") { viewerMode = "rtc"; video = vSub; $("#m-live").src = "data:,"; setLive(true); }
+      else { console.warn(`[video] HLS ${paths[0]}: ${why}`); viewerStop = null; hls(paths.slice(1)); }
+    });
+  };
+  hls([c && c.hls, c && c.hls_h264].filter(Boolean));
 }
 
 // The HUD (count and count line) sits exactly over the picture: the video is letterboxed, so measure where the picture is.

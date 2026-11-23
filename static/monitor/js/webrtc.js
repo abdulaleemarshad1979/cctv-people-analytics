@@ -58,7 +58,7 @@ function playWhep(video, path, onEvent) {
 function playHls(video, path, onEvent) {
   const src = `/hls/${encodeURIComponent(path)}/index.m3u8`;
   let dead = false, playing = false, hls = null;
-  const timer = setTimeout(() => !playing && fail("no video within 15 s"), 15000);
+  const timer = setTimeout(() => !playing && fail("no video within 25 s"), 25000);
 
   function stop() {
     if (dead) return;
@@ -72,7 +72,7 @@ function playHls(video, path, onEvent) {
 
   video.onplaying = () => { if (!playing && !dead) { playing = true; onEvent("playing"); } };
   if (window.Hls && Hls.isSupported()) {
-    hls = new Hls({lowLatencyMode: true, backBufferLength: 10, manifestLoadingMaxRetry: 6, manifestLoadingRetryDelay: 1000});
+    hls = new Hls({lowLatencyMode: true, backBufferLength: 10, manifestLoadingMaxRetry: 20, manifestLoadingRetryDelay: 1000});
     hls.on(Hls.Events.ERROR, (_, d) => {
       if (!d.fatal) return;
       if (playing && d.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();   // a decode hiccup after it played: recover in place
