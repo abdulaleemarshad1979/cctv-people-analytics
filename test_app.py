@@ -22,6 +22,10 @@ class AppTests(unittest.TestCase):
         self.assertEqual(c.watch_until, 0.0)   # watch_until made the app decode every 5 MP frame and starved line counting
         self.assertGreater(c.view_until, 0.0)
 
+    def test_main_stream_path_of_a_sub_stream(self):
+        self.assertEqual(app.main_path("/live1s2.sdp"), "/live1s1.sdp")
+        self.assertIsNone(app.main_path("/live1s1.sdp"))   # already the main stream
+
     def test_published_for_reads_mediamtx_ready_time(self):
         ago = (app.datetime.now(app.timezone.utc) - app.timedelta(seconds=7)).strftime("%Y-%m-%dT%H:%M:%S.123456789Z")
         self.assertAlmostEqual(app.published_for({"readyTime": ago}), 7, delta=1.5)

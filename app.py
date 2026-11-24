@@ -73,7 +73,7 @@ CROWD_INTERVAL = float(os.getenv("CROWD_INTERVAL_S", "30"))
 SHOW_BOXES = os.getenv("SHOW_BOXES", "0") == "1"   # boxes and track ids on the video; off by default (cleaner, cheaper)
 # Live viewer JPEG width and quality. Measured on the site's night pictures: 1280 @ 85 = ~280 KB a frame (~55 Mbit/s at 25 fps),
 # more than many remote links carry; 960 @ 70 = ~120 KB. Tiles (480 px) are ~36 KB at 70.
-VIEW_WIDTH = int(os.getenv("VIEW_WIDTH", "960"))
+VIEW_WIDTH = int(os.getenv("VIEW_WIDTH", "1280"))
 VIEW_QUALITY = int(os.getenv("VIEW_QUALITY", "70"))
 VIEW_FPS = float(os.getenv("VIEW_FPS", "25"))        # max viewer frame rate; match the camera (25) so no frames are dropped unevenly
 VIEW_DELAY = float(os.getenv("VIEW_DELAY_MS", "0")) / 1000   # MJPEG fallback only: hold frames this long so a burst from the network is spread out (100-150 on a bursty link; adds that much delay; not measured to help)
@@ -208,11 +208,14 @@ def probe(url):
 
 
 def main_path(path):
-    """Main-stream path for a sub-stream path (Dahua/CP PLUS subtype=1 -> 0, Hikvision .../NN02 -> NN01), or None."""
+    """Main-stream path for a sub-stream path (Dahua/CP PLUS subtype=1 -> 0, Hikvision .../NN02 -> NN01, /liveNs2.sdp -> /liveNs1.sdp), or None."""
     if "subtype=1" in path:
         return path.replace("subtype=1", "subtype=0")
     m = re.fullmatch(r"(/Streaming/Channels/\d+)02", path)
-    return m.group(1) + "01" if m else None
+    if m:
+        return m.group(1) + "01"
+    m = re.fullmatch(r"(/live\d+)s2(\.sdp)", path)   # live1s2.sdp -> live1s1.sdp
+    return m.group(1) + "s1" + m.group(2) if m else None
 
 
 def hub_call(method, path, body=None):
@@ -454,7 +457,7 @@ class Camera:
                 if proc is None or proc.poll() is not None:
                     if proc is not None:   # source dropped: retry shortly while still watched
                         time.sleep(2)
-                    url = self.url()
+                    url = f"{self.hub_base}/{self.cfg['id']}_hd" if self.cfg["id"] + "_hd" in self.registered else self.url()   # the main stream when analysis reads a sub-stream: best quality
                     src = (["-rtsp_transport", "tcp", "-timeout", "10000000"] if url.lower().startswith("rtsp://")
                            else [] if url.lower().startswith(STREAM_PREFIXES) else ["-re", "-stream_loop", "-1"])
                     proc = subprocess.Popen(
@@ -462,7 +465,7 @@ class Camera:
                          "-vf", f"scale='min(iw,{VIEW_WIDTH})':-2", "-c:v", "libx264", "-preset", "veryfast",
                          "-tune", "zerolatency", "-pix_fmt", "yuv420p", "-threads", "2",
                          "-force_key_frames", "expr:gte(t,n_forced)",   # a keyframe every 1 s = MediaMTX's 1 s HLS segments
-                         "-crf", "26", "-maxrate", "2500k", "-bufsize", "5000k",
+                         "-crf", "23", "-maxrate", "4000k", "-bufsize", "8000k",
                          "-f", "rtsp", "-rtsp_transport", "tcp", f"{self.hub_base}/{self.cfg['id']}_view"],
                         stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 time.sleep(1)
