@@ -146,10 +146,11 @@ function startTile(t) {
     if (i === modes.length) {
       t.fallback = true;
       t.stop = null; t.mode = null; t.el.dataset.playing = "";
-      t.retryAt = Date.now() + 30000;
+      t.retryAt = Date.now() + 8000;
       return;
     }
     const [mode, path] = modes[i];
+    if (mode === "hls" && t.noHls) return attempt(i + 1);   // this camera is H.265: the browser rejected it before
     if (mode === "rtc" && t.noRtc) return attempt(i + 1);   // WebRTC cannot carry the H.265 that HLS just rejected
     if (mode === "h264" && [...tiles.values()].filter(x => x.mode === "h264").length >= MAX_H264_TILES) {
       attempt(i + 1);
@@ -159,12 +160,13 @@ function startTile(t) {
     t.stop = (mode === "rtc" ? playWhep : playHls)(t.video, path, (event, why) => {
       if (generation !== t.generation) return;
       if (event === "playing") {
-        t.el.dataset.playing = "1";
+        t.el.dataset.playing = "1"; t.retries = 0;
         t.img.removeAttribute("src");
       } else {
         console.warn(`[video] ${id} ${mode}: ${why}`);
-        if (mode === "hls" && why === "manifestIncompatibleCodecsError") t.noRtc = true;
+        if (mode === "hls" && why === "manifestIncompatibleCodecsError") t.noRtc = t.noHls = true;
         t.stop = null; t.mode = null; t.el.dataset.playing = "";
+        if (mode === "h264" && (t.retries = (t.retries || 0) + 1) <= 2) return attempt(i);   // a hiccup in the H.264 copy: start it again before giving up
         attempt(i + 1);
       }
     });
