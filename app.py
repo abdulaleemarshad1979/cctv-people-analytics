@@ -341,7 +341,7 @@ class Camera:
         self.keyframes = False             # reading keyframes only (KeyframeReader): an idle density camera
         self.base_in = self.base_out = 0   # lifetime totals from history.db at start-up; the counter holds this session's crossings
         self.saved_in = self.saved_out = 0  # of the counter's crossings, how many are already in history.db
-        self.view_on, self.view_until = False, 0.0   # view_loop is publishing <id>_view (H.264) to MediaMTX, until view_until
+        self.view_on, self.view_until = {}, {}   # per published H.264 copy ("_view" for the tiles, "_viewhd" for the opened viewer): encoder running / wanted until
         self.recent = deque(maxlen=10)   # (arrived, seq, frame) while watched: the viewer's de-jitter buffer
         self.jpegs = {}                  # width -> (key, jpeg): viewers and tiles of one frame share one encode
 
@@ -447,47 +447,45 @@ class Camera:
                         if watched:
                             self.recent.append((now, self.frame_seq, frame))
 
-    def ensure_view(self):
-        """Someone plays <id>_view: keep the H.264 encoder running for a few more seconds (its playlist is polled ~1/s)."""
-        self.view_until = time.monotonic() + 15
+    def ensure_view(self, name="_view"):
+        """Someone plays <id><name>: keep its H.264 encoder running for a few more seconds (its playlist is polled ~1/s)."""
+        self.view_until[name] = time.monotonic() + 15
         with self.lock:
-            if self.view_on or not FFMPEG or not self.hub_base:
+            if self.view_on.get(name) or not FFMPEG or not self.hub_base:
                 return
-            self.view_on = True
-        threading.Thread(target=self.view_loop, name=f"view-{self.cfg['id']}", daemon=True).start()
+            self.view_on[name] = True
+        threading.Thread(target=self.view_loop, args=(name,), name=f"view-{self.cfg['id']}{name}", daemon=True).start()
 
-    def view_loop(self):
-        """H.264 for browsers that cannot play the camera's H.265: one ffmpeg reads the camera from MediaMTX, shrinks it to
-        VIEW_WIDTH and publishes <id>_view. Frames never pass through Python (that capped it at ~8 fps under the GIL and starved
-        line counting), and the camera's own timestamps are kept, so it plays at the camera's frame rate."""
+    def view_loop(self, name):
+        """H.264 for browsers that cannot play the camera's H.265: one ffmpeg per copy reads the camera from MediaMTX, shrinks it
+        (TILE_WIDTH for the grid tiles, VIEW_WIDTH for the opened viewer) and publishes <id><name>. Frames never pass through
+        Python, so it keeps the camera's frame rate (25 at most) without touching line counting. The big copy only runs while a viewer is open."""
+        width, kbps = (VIEW_WIDTH, 4000) if name == "_viewhd" else (TILE_WIDTH, 1200)
         proc = None
         try:
-            while time.monotonic() < self.view_until:
+            while time.monotonic() < self.view_until[name]:
                 if proc is None or proc.poll() is not None:
                     if proc is not None:   # source dropped: retry shortly while still watched
                         time.sleep(2)
                     url = f"{self.hub_base}/{self.cfg['id']}_hd" if self.cfg["id"] + "_hd" in self.registered else self.url()   # the main stream when analysis reads a sub-stream: best quality
                     src = (["-rtsp_transport", "tcp", "-timeout", "10000000"] if url.lower().startswith("rtsp://")
                            else [] if url.lower().startswith(STREAM_PREFIXES) else ["-re", "-stream_loop", "-1"])
-                    def out(name, kbps):   # one H.264 output: a keyframe every 1 s = MediaMTX's 1 s HLS segments
-                        return ["-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-pix_fmt", "yuv420p", "-threads", "2",
-                                "-force_key_frames", "expr:gte(t,n_forced)", "-crf", "24", "-maxrate", f"{kbps}k", "-bufsize", f"{2 * kbps}k",
-                                "-f", "rtsp", "-rtsp_transport", "tcp", f"{self.hub_base}/{self.cfg['id']}{name}"]
-                    cid = self.cfg["id"]
-                    proc = subprocess.Popen(   # decode once; <id>_view = small tile copy, <id>_viewhd = the opened viewer's copy; 25 fps at most
+                    proc = subprocess.Popen(
                         [FFMPEG, "-nostdin", "-loglevel", "error", "-threads", "4", *src, "-i", url, "-an",
-                         "-filter_complex", f"[0:v]fps=25,split=2[a][b];[a]scale='min(iw,{TILE_WIDTH})':-2[t];[b]scale='min(iw,{VIEW_WIDTH})':-2[h]",
-                         "-map", "[t]", *out("_view", 1200), "-map", "[h]", *out("_viewhd", 4000)],
+                         "-vf", f"fps=25,scale='min(iw,{width})':-2", "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
+                         "-pix_fmt", "yuv420p", "-threads", "2", "-force_key_frames", "expr:gte(t,n_forced)",   # a keyframe every 1 s = MediaMTX's 1 s HLS segments
+                         "-crf", "24", "-maxrate", f"{kbps}k", "-bufsize", f"{2 * kbps}k",
+                         "-f", "rtsp", "-rtsp_transport", "tcp", f"{self.hub_base}/{self.cfg['id']}{name}"],
                         stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 time.sleep(1)
         except OSError as exc:
-            log.warning("%s: H.264 view stopped: %s", self.cfg["name"], exc)
+            log.warning("%s: H.264 copy %s stopped: %s", self.cfg["name"], name, exc)
         finally:
             if proc is not None:
                 proc.kill()
                 proc.wait()
             with self.lock:
-                self.view_on = False
+                self.view_on[name] = False
 
     # ---- inference -----------------------------------------------------------------
     def infer(self, model):
@@ -601,17 +599,13 @@ class Camera:
         return out
 
     def render(self, width=None, item=None):
-        """JPEG of a frame (default: the latest) with the count only; the count line works in the background and is not drawn (boxes with SHOW_BOXES=1)."""
+        """JPEG of a frame (default: the latest), with no count or line drawn on it (boxes with SHOW_BOXES=1)."""
         with self.lock:
             seq, frame = (item[1], item[2]) if item else (self.frame_seq, self.frame)
             cfg, dets = self.cfg, list(self.dets)
-            counts, people = self.counts(), self.people
         if frame is None:
             return None
-        label = {"inout": f"IN {counts['in']}  OUT {counts['out']}",
-                 "both": f"IN {counts['in']}  OUT {counts['out']}  PEOPLE {people}",
-                 "density": f"PEOPLE {people}"}.get(cfg["role"], "")
-        key = (seq, label, cfg["role"], str(cfg["line"]), cfg["in_side"], dets if SHOW_BOXES else None)
+        key = (seq, cfg["role"], dets if SHOW_BOXES else None)   # no count stamp: the counts are shown beside the picture
         cached = self.jpegs.get(width)
         if cached and cached[0] == key:
             return cached[1]
@@ -628,7 +622,6 @@ class Camera:
             cv2.circle(frame, (round((x1 + x2) / 2), round(y2)), 4, YELLOW, -1)
             cv2.putText(frame, f"#{track_id}", (round(x1), max(20, round(y1) - 7)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, GREEN, 2)
-        cv2.putText(frame, label, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         ok, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, VIEW_QUALITY])
         jpg = jpg.tobytes() if ok else None
         if len(self.jpegs) > 8:   # ?w= is free-form: keep the cache small
@@ -1121,7 +1114,7 @@ def authorize_hls():
         abort(403)
     if match.group(2):   # the H.264 copy: every request keeps its encoder alive; its first playlist waits until ~9 s of video exist, so the player can start 10 s behind live
         cam = engine.cameras[match.group(1)]
-        cam.ensure_view()
+        cam.ensure_view(match.group(2))
         give_up, need = time.monotonic() + 25, 9 if path.endswith("/index.m3u8") else 0
         while path.endswith(".m3u8") and time.monotonic() < give_up:
             try:

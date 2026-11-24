@@ -19,8 +19,10 @@ class AppTests(unittest.TestCase):
     def test_playing_the_h264_copy_does_not_force_full_frame_decoding(self):
         c = cam()   # hub_base None: no encoder thread starts
         c.ensure_view()
+        c.ensure_view("_viewhd")
         self.assertEqual(c.watch_until, 0.0)   # watch_until made the app decode every 5 MP frame and starved line counting
-        self.assertGreater(c.view_until, 0.0)
+        self.assertGreater(c.view_until["_view"], 0.0)
+        self.assertGreater(c.view_until["_viewhd"], 0.0)   # the big copy is requested on its own, by the opened viewer
 
     def test_gate_worker_gets_a_shrunk_frame_and_boxes_come_back_in_frame_pixels(self):
         import io, json

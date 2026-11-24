@@ -112,13 +112,13 @@ async function poll() {
   try { data = await api("/api/cameras"); render(); } catch (e) { $("#infer").textContent = "Disconnected"; }
 }
 
-// Tiles show a refreshed snapshot (browsers cap ~6 connections/host, so 40 live MJPEG streams would stall).
+// A tile whose video cannot start (t.fallback) shows a refreshed snapshot instead; otherwise it stays dark until the video plays, so the picture never jumps between a still and the video (browsers cap ~6 connections/host, so 40 live MJPEG streams would stall).
 // Each tile asks for its next picture only once the last one arrived, at most every TILE_MS: a slow link lowers the rate, never adds delay.
 const TILE_MS = 300;
 function refreshImages() {
   const now = Date.now();
   for (const [id, t] of tiles) {
-    if (openId || t.loading || now - (t.asked || 0) < TILE_MS || t.el.dataset.playing === "1" || !inView.has(id) || t.el.dataset.status !== "live" || t.el.classList.contains("hidden")) continue;
+    if (openId || !t.fallback || t.loading || now - (t.asked || 0) < TILE_MS || t.el.dataset.playing === "1" || !inView.has(id) || t.el.dataset.status !== "live" || t.el.classList.contains("hidden")) continue;
     t.loading = true; t.asked = now;
     const probe = new Image();
     probe.onload = () => { t.img.src = probe.src; t.loading = false; };
@@ -138,11 +138,13 @@ function stopTile(t) {
 }
 function startTile(t) {
   const id = t.cam.id, generation = ++t.generation;
+  t.fallback = false;
   const modes = [t.cam.hls && ["hls", t.cam.hls], t.cam.play && ["rtc", t.cam.play],
     t.cam.hls_h264 && ["h264", t.cam.hls_h264]].filter(Boolean);
   const attempt = i => {
     if (generation !== t.generation) return;
     if (i === modes.length) {
+      t.fallback = true;
       t.stop = null; t.mode = null; t.el.dataset.playing = "";
       t.retryAt = Date.now() + 30000;
       return;
@@ -178,6 +180,7 @@ function manageTiles() {
   }
   for (const [id, t] of tiles) {
     if (running >= MAX_LIVE_TILES) break;
+    if (t.cam && !(t.cam.hls || t.cam.play)) t.fallback = true;   // no video path for this camera: snapshots
     if (t.stop || Date.now() < t.retryAt || openId || !t.cam || t.cam.status !== "live" || !inView.has(id) || t.el.classList.contains("hidden") || !(t.cam.hls || t.cam.play)) continue;
     running++;
     startTile(t);
