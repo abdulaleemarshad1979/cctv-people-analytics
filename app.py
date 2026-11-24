@@ -1034,6 +1034,18 @@ def authorize_hls():
     match = re.fullmatch(r"/hls/([A-Za-z0-9_-]+?)(?:_view)?/[A-Za-z0-9_.-]{1,80}\.(?:m3u8|mp4)", path)
     if match is None or match.group(1) not in list(engine.cameras)[:ACTIVE_CAMERA_COUNT]:
         abort(403)
+    if "_view/" in path:   # the H.264 copy: every request keeps its encoder alive; the first playlist waits for it to publish (hls.js never retries a 404)
+        cam = engine.cameras[match.group(1)]
+        cam.ensure_view()
+        give_up = time.monotonic() + 20
+        while path.endswith(".m3u8") and time.monotonic() < give_up:
+            try:
+                status, info = hub_call("GET", f"/v3/paths/get/{match.group(1)}_view")
+            except OSError:
+                break
+            if status == 200 and info and info.get("ready"):
+                break
+            time.sleep(0.5)
     return "", 204
 
 
