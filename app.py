@@ -60,7 +60,7 @@ INOUT_CONF = float(os.getenv("INOUT_CONFIDENCE", "0.35"))   # gate detector conf
 # detector / four crowd workers, extra model copies can make a 32 GB server swap or
 # restart while doing little for throughput.
 CORES = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 4)
-ACTIVE_CAMERA_COUNT = max(1, int(os.getenv("ACTIVE_CAMERA_COUNT", "7")))
+ACTIVE_CAMERA_COUNT = max(1, int(os.getenv("ACTIVE_CAMERA_COUNT", "12")))
 
 
 def default_worker_counts(cores, active_cameras):

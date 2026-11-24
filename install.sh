@@ -55,6 +55,7 @@ if [ -n "$ips" ]; then   # browsers need this server's address for live video (a
     sed -i "s/^WEBRTC_HOSTS=.*/WEBRTC_HOSTS=127.0.0.1,$ips/" .env
   fi
 fi
+sed -i 's/^ACTIVE_CAMERA_COUNT=7\b/ACTIVE_CAMERA_COUNT=12/' .env   # an older .env still has the previous default of 7
 [ -f config/nvrs.json ] || cp nvrs.example.json config/nvrs.json
 chmod 600 config/nvrs.json
 chown -R 1000:1000 config 2>/dev/null || true   # the app container runs as uid 1000
