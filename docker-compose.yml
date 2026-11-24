@@ -39,7 +39,8 @@ services:
       LOGIN_USER: ${LOGIN_USER:-admin}
       LOGIN_PASSWORD: ${LOGIN_PASSWORD:-admin123}
       INOUT_FPS: ${INOUT_FPS:-10}
-      INOUT_IMGSZ: ${INOUT_IMGSZ:-640}
+      GATE_IMGSZ: ${GATE_IMGSZ:-960}   # detector size for the gate counters (larger finds far-away people)
+      INOUT_TORCH_THREADS: ${INOUT_TORCH_THREADS:-2}   # CPU threads per detector process
       INOUT_CONFIDENCE: ${INOUT_CONFIDENCE:-0.35}   # lower (e.g. 0.25) if walkers at the line are missed at night
       CROWD_INTERVAL_S: ${CROWD_INTERVAL_S:-30}
       DETECT_INTERVAL_S: ${DETECT_INTERVAL_S:-30}

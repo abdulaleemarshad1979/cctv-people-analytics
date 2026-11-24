@@ -22,6 +22,18 @@ class AppTests(unittest.TestCase):
         self.assertEqual(c.watch_until, 0.0)   # watch_until made the app decode every 5 MP frame and starved line counting
         self.assertGreater(c.view_until, 0.0)
 
+    def test_gate_worker_gets_a_shrunk_frame_and_boxes_come_back_in_frame_pixels(self):
+        import io, json
+        import numpy as np
+        sent = io.BytesIO()
+        proc = type("P", (), {"stdin": sent, "stdout": io.BytesIO(b'{"boxes": [[10, 20, 30, 40]]}\n')})()
+        worker = app.GateProcess.__new__(app.GateProcess)
+        worker.proc = proc
+        boxes = worker.boxes(np.zeros((1080, 1920, 3), np.uint8), imgsz=960)
+        header = json.loads(sent.getvalue().split(b"\n", 1)[0])
+        self.assertEqual((header["w"], header["h"]), (960, 540))   # shrunk to the detector size
+        self.assertEqual(boxes, [(20.0, 40.0, 60.0, 80.0)])        # scaled back x2 to the full frame
+
     def test_main_stream_path_of_a_sub_stream(self):
         self.assertEqual(app.main_path("/live1s2.sdp"), "/live1s1.sdp")
         self.assertIsNone(app.main_path("/live1s1.sdp"))   # already the main stream

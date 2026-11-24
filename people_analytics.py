@@ -52,16 +52,16 @@ class LineCounter:
 
     def update(self, boxes, width, height, now=None):
         """Person boxes (x1, y1, x2, y2) in pixels -> [(track id, box)]. Same flow as active_pixel_html_camera_site:
-        each foot point joins the nearest track (<= 0.2 of the frame) and counts once when its path crosses the finite line."""
+        each foot point joins the nearest track (within 0.05 of the frame plus 0.5 of it per second since its last check) and counts once when its path crosses the finite line."""
         now = time.monotonic() if now is None else now
         self.tracks = {i: t for i, t in self.tracks.items() if now - t["seen"] < TRACK_MAX_GAP_S}
         points = [((x1 + x2) / (2 * width), y2 / height) for x1, y1, x2, y2 in boxes]
-        # A worker running below its target rate sees a larger jump between frames.
-        # Allow that jump while keeping the 1.25 s expiry that prevents a new
-        # person inheriting an old person's crossing.
+        # A person moves at most ~0.5 of the frame a second, so the match radius is 0.05 + 0.5 * seconds since the track's last
+        # check: ~0.11 at 8 checks/s (a loose 0.2+ radius let two people crossing paths swap tracks and miscount), wider after a slow or missed check.
+        # The 1.25 s expiry stops a new person inheriting an old person's crossing.
         pairs = sorted((math.dist(p, t["point"]), k, i) for k, p in enumerate(points)
                        for i, t in self.tracks.items()
-                       if math.dist(p, t["point"]) <= min(0.35, 0.2 + 0.25 * (now - t["seen"])))
+                       if math.dist(p, t["point"]) <= min(0.35, 0.05 + 0.5 * (now - t["seen"])))
         matches, used = {}, set()
         for _, k, i in pairs:   # closest pairs first, each point and track used once
             if k not in matches and i not in used:

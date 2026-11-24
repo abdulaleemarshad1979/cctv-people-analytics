@@ -43,7 +43,7 @@ ROOT = Path(__file__).parent
 app = Flask(__name__, static_folder=str(ROOT / "static"))
 CONFIG_PATH = Path(os.getenv("ANALYTICS_CONFIG", str(ROOT / "cameras.json")))
 MODEL_PATH = os.getenv("PEOPLE_MODEL", str(ROOT / "yolov8n.pt"))
-INOUT_IMGSZ = int(os.getenv("INOUT_IMGSZ", "640"))   # detector size: native resolution for a 640x360 sub-stream
+INOUT_IMGSZ = int(os.getenv("GATE_IMGSZ", "960"))   # detector size for the gates: people far from the camera are only a few dozen px tall in a 1280x720 sub-stream
 INOUT_CONF = float(os.getenv("INOUT_CONFIDENCE", "0.35"))   # gate detector confidence, as active_pixel_html_camera_site
 # Crossing counter (YOLO + nearest-point matching): drops crossings below ~5 checks/s (measured on a walker
 # crossing 10 % of the frame per second). Crowd count (DM-Count + CSRNet fusion, ~2.9 core-seconds per frame):
@@ -74,6 +74,7 @@ SHOW_BOXES = os.getenv("SHOW_BOXES", "0") == "1"   # boxes and track ids on the 
 # Live viewer JPEG width and quality. Measured on the site's night pictures: 1280 @ 85 = ~280 KB a frame (~55 Mbit/s at 25 fps),
 # more than many remote links carry; 960 @ 70 = ~120 KB. Tiles (480 px) are ~36 KB at 70.
 VIEW_WIDTH = int(os.getenv("VIEW_WIDTH", "1280"))
+TILE_WIDTH = int(os.getenv("TILE_WIDTH", "640"))     # the small grid tiles play this size (a 330 px tile gains nothing from more, and seven big decodes stall a browser)
 VIEW_QUALITY = int(os.getenv("VIEW_QUALITY", "70"))
 VIEW_FPS = float(os.getenv("VIEW_FPS", "25"))        # max viewer frame rate; match the camera (25) so no frames are dropped unevenly
 VIEW_DELAY = float(os.getenv("VIEW_DELAY_MS", "0")) / 1000   # MJPEG fallback only: hold frames this long so a burst from the network is spread out (100-150 on a bursty link; adds that much delay; not measured to help)
@@ -460,13 +461,15 @@ class Camera:
                     url = f"{self.hub_base}/{self.cfg['id']}_hd" if self.cfg["id"] + "_hd" in self.registered else self.url()   # the main stream when analysis reads a sub-stream: best quality
                     src = (["-rtsp_transport", "tcp", "-timeout", "10000000"] if url.lower().startswith("rtsp://")
                            else [] if url.lower().startswith(STREAM_PREFIXES) else ["-re", "-stream_loop", "-1"])
-                    proc = subprocess.Popen(
+                    def out(name, kbps):   # one H.264 output: a keyframe every 1 s = MediaMTX's 1 s HLS segments
+                        return ["-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-pix_fmt", "yuv420p", "-threads", "2",
+                                "-force_key_frames", "expr:gte(t,n_forced)", "-crf", "24", "-maxrate", f"{kbps}k", "-bufsize", f"{2 * kbps}k",
+                                "-f", "rtsp", "-rtsp_transport", "tcp", f"{self.hub_base}/{self.cfg['id']}{name}"]
+                    cid = self.cfg["id"]
+                    proc = subprocess.Popen(   # decode once; <id>_view = small tile copy, <id>_viewhd = the opened viewer's copy; 25 fps at most
                         [FFMPEG, "-nostdin", "-loglevel", "error", "-threads", "4", *src, "-i", url, "-an",
-                         "-vf", f"scale='min(iw,{VIEW_WIDTH})':-2", "-c:v", "libx264", "-preset", "veryfast",
-                         "-tune", "zerolatency", "-pix_fmt", "yuv420p", "-threads", "2",
-                         "-force_key_frames", "expr:gte(t,n_forced)",   # a keyframe every 1 s = MediaMTX's 1 s HLS segments
-                         "-crf", "23", "-maxrate", "4000k", "-bufsize", "8000k",
-                         "-f", "rtsp", "-rtsp_transport", "tcp", f"{self.hub_base}/{self.cfg['id']}_view"],
+                         "-filter_complex", f"[0:v]fps=25,split=2[a][b];[a]scale='min(iw,{TILE_WIDTH})':-2[t];[b]scale='min(iw,{VIEW_WIDTH})':-2[h]",
+                         "-map", "[t]", *out("_view", 1200), "-map", "[h]", *out("_viewhd", 4000)],
                         stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 time.sleep(1)
         except OSError as exc:
@@ -485,13 +488,13 @@ class Camera:
             frame, seq, role = self.frame, self.frame_seq, self.cfg["role"]
         h, w = frame.shape[:2]
         started = time.monotonic()
-        boxes = model.predict(frame, classes=[0], conf=INOUT_CONF, imgsz=INOUT_IMGSZ, verbose=False)[0].boxes.xyxy.cpu().numpy()
+        boxes = model.boxes(frame, conf=INOUT_CONF, imgsz=INOUT_IMGSZ)
         now = time.monotonic()
         with self.lock:
             if self.cfg["role"] != role:  # role changed mid-inference; drop the result
                 return
             self.infer_seq = seq
-            self.dets = self.counter.update([tuple(map(float, b)) for b in boxes], w, h, now)
+            self.dets = self.counter.update(boxes, w, h, now)
             self.visible = len(self.dets)
             self.error = None
             if role == "inout":
@@ -520,7 +523,7 @@ class Camera:
         with self.lock:
             frame, seq, role = self.frame, self.frame_seq, self.cfg["role"]
         # iou/agnostic stated: ultralytics keeps the tracker call's iou=0.8, which keeps duplicate boxes (one person counted twice)
-        n = len(model.predict(frame, classes=[0], conf=COUNT_CONF, iou=0.55, agnostic_nms=True, max_det=3000, imgsz=640, verbose=False)[0].boxes)
+        n = len(model.boxes(frame, conf=COUNT_CONF, iou=0.55, agnostic_nms=True, max_det=3000, imgsz=640))
         now = time.monotonic()
         with self.lock:
             if self.cfg["role"] != role:
@@ -568,6 +571,7 @@ class Camera:
                "hls": self.play_path() if HLS_URL and engine.hls_on else None,
                "hls_hd": self.play_path(hd=True) if HLS_URL and engine.hls_on else None,
                "hls_h264": f"{cfg['id']}_view" if HLS_URL and engine.hls_on and FFMPEG and self.hub_base else None,
+               "hls_h264_hd": f"{cfg['id']}_viewhd" if HLS_URL and engine.hls_on and FFMPEG and self.hub_base else None,
                "target_fps": TRACK_FPS if cfg["role"] in TRACKING else 0}
         if cfg["role"] in TRACKING:
             out.update(counts, error=self.error,
@@ -626,6 +630,41 @@ class Camera:
             return None
         ok, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 88])
         return jpg.tobytes() if ok else None
+
+
+class GateProcess:
+    """Parent-side handle of gate_worker.py: person boxes for a frame, detected in a process of its own."""
+
+    def __init__(self):
+        self.proc = subprocess.Popen([sys.executable, str(ROOT / "gate_worker.py")], stdin=subprocess.PIPE,
+                                     stdout=subprocess.PIPE, cwd=str(ROOT))
+        if not self.proc.stdout.readline():
+            raise RuntimeError("detector worker exited at start-up (is the people model present?)")
+
+    def poll(self):
+        return self.proc.poll()
+
+    def boxes(self, frame, **args):
+        """[(x1, y1, x2, y2)] in `frame` pixels. The frame is shrunk to args['imgsz'] first: the detector resizes to that anyway."""
+        h, w = frame.shape[:2]
+        k = max(h, w) / args["imgsz"]
+        if k > 1:
+            frame = cv2.resize(frame, (round(w / k), round(h / k)), interpolation=cv2.INTER_AREA)
+        else:
+            k = 1.0
+        sh, sw = frame.shape[:2]
+        self.proc.stdin.write(json.dumps({"h": sh, "w": sw, "args": args}).encode() + b"\n" + frame.tobytes())
+        self.proc.stdin.flush()
+        line = self.proc.stdout.readline()
+        if not line:
+            raise RuntimeError("detector worker stopped")
+        return [(x1 * k, y1 * k, x2 * k, y2 * k) for x1, y1, x2, y2 in json.loads(line)["boxes"]]
+
+    def close(self):
+        try:
+            self.proc.kill()
+        except OSError:
+            pass
 
 
 class CrowdProcess:
@@ -815,45 +854,46 @@ class Engine:
             return job
 
     def infer_loop(self):
+        """One detector process per thread (gate_worker.py): the YOLO work runs outside this process's interpreter lock."""
+        worker = None
         while True:
+            job = None
             try:
-                from ultralytics import YOLO
-                import numpy as np
-                import torch
-                log.info("Loading people model %s", MODEL_PATH)
-                model = YOLO(MODEL_PATH)  # one model per worker thread: ultralytics predictors are not thread-safe
-                model.predict(np.zeros((64, 64, 3), np.uint8), imgsz=INOUT_IMGSZ, verbose=False)
-                torch.set_num_threads(1)
-                self.detector_error = None
-                break
-            except Exception as exc:
-                self.detector_error = f"{type(exc).__name__}: {exc}"[:200]
-                log.exception("Gate detector failed to start; retrying")
-                time.sleep(15)
-        while True:
-            job = self.pick_detector_job()
-            if job is None:
-                time.sleep(0.02)
-                continue
-            kind, cam = job
-            try:
+                if worker is None or worker.poll() is not None:
+                    worker = GateProcess()
+                    self.detector_error = None
+                job = self.pick_detector_job()
+                if job is None:
+                    time.sleep(0.02)
+                    continue
+                kind, cam = job
                 if kind == "gate":
-                    cam.infer(model)
+                    cam.infer(worker)
                     self.rate_times.append(time.monotonic())
                 else:
-                    cam.detect(model)
+                    cam.detect(worker)
             except Exception as exc:
-                log.exception("%s failed for %s", "Inference" if kind == "gate" else "Head count", cam.cfg["id"])
-                if kind == "gate":
-                    cam.error = f"{type(exc).__name__}: {exc}"[:200]
-                    cam.due = time.monotonic() + 5
+                log.exception("Detector failed%s", f" for {job[1].cfg['id']}" if job else " to start")
+                if job is None:
+                    self.detector_error = f"{type(exc).__name__}: {exc}"[:200]
+                    time.sleep(15)
                 else:
-                    cam.detect_due = time.monotonic() + 30
+                    kind, cam = job
+                    if kind == "gate":
+                        cam.error = f"{type(exc).__name__}: {exc}"[:200]
+                        cam.due = time.monotonic() + 5
+                    else:
+                        cam.detect_due = time.monotonic() + 30
+                if worker is not None:
+                    worker.close()          # a failed job may mean a broken pipe: restart the worker
+                    worker = None
             finally:
-                with self.pick_lock:
-                    cam.busy = False
-                    if kind == "count":
-                        self.active_head_jobs -= 1
+                if job is not None:
+                    kind, cam = job
+                    with self.pick_lock:
+                        cam.busy = False
+                        if kind == "count":
+                            self.active_head_jobs -= 1
 
     def pick_crowd_job(self):
         now = time.monotonic()
@@ -1032,16 +1072,16 @@ def authorize_hls():
     if session.get("user") != AUTH[0]:
         abort(401)
     path = request.headers.get("X-Original-URI", "").split("?", 1)[0]
-    match = re.fullmatch(r"/hls/([A-Za-z0-9_-]+?)(?:_view)?/[A-Za-z0-9_.-]{1,80}\.(?:m3u8|mp4)", path)
+    match = re.fullmatch(r"/hls/([A-Za-z0-9_-]+?)(_viewhd|_view)?/[A-Za-z0-9_.-]{1,80}\.(?:m3u8|mp4)", path)
     if match is None or match.group(1) not in list(engine.cameras)[:ACTIVE_CAMERA_COUNT]:
         abort(403)
-    if "_view/" in path:   # the H.264 copy: every request keeps its encoder alive; its first playlist waits until ~9 s of video exist, so the player can start 10 s behind live
+    if match.group(2):   # the H.264 copy: every request keeps its encoder alive; its first playlist waits until ~9 s of video exist, so the player can start 10 s behind live
         cam = engine.cameras[match.group(1)]
         cam.ensure_view()
         give_up, need = time.monotonic() + 25, 9 if path.endswith("/index.m3u8") else 0
         while path.endswith(".m3u8") and time.monotonic() < give_up:
             try:
-                status, info = hub_call("GET", f"/v3/paths/get/{match.group(1)}_view")
+                status, info = hub_call("GET", f"/v3/paths/get/{match.group(1)}{match.group(2)}")
             except OSError:
                 break
             if status == 200 and info and info.get("ready") and published_for(info) >= need:

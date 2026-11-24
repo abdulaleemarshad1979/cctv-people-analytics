@@ -452,7 +452,7 @@ setInterval(() => {
   const now = performance.now(), frames = video.getVideoPlaybackQuality().totalVideoFrames;
   if (measuredVideo === video && measuredAt && !video.paused && now > measuredAt) {
     const fps = Math.max(0, (frames - measuredFrames) * 1000 / (now - measuredAt));
-    $("#m-playback").textContent = `${fps.toFixed(1)} fps · ${playbackTransport} · ${video.videoWidth}×${video.videoHeight}` + (playbackTransport.includes("HLS") ? " · video buffered ~6s; counts live" : "");
+    $("#m-playback").textContent = `${fps.toFixed(1)} fps · ${playbackTransport} · ${video.videoWidth}×${video.videoHeight}` + (playbackTransport.includes("HLS") ? " · video ~10s behind live; counts live" : "");
   }
   measuredVideo = video; measuredFrames = frames; measuredAt = now;
 }, 2000);
@@ -552,7 +552,7 @@ function startViewer(id) {
       }
     });
   };
-  hls([c && c.hls, c && c.hls_h264].filter(Boolean));
+  hls([c && c.hls, c && c.hls_h264_hd, c && c.hls_h264].filter(Boolean));   // the viewer gets the big H.264 copy; the small tiles get the 640 px one
 }
 
 // The HUD (count and count line) sits exactly over the picture: the video is letterboxed, so measure where the picture is.
