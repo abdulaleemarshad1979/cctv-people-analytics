@@ -10,7 +10,7 @@ rtmp: no
 hls: yes
 hlsAddress: :8888
 hlsVariant: lowLatency
-hlsSegmentCount: 12
+hlsSegmentCount: 20
 hlsSegmentDuration: 1s
 hlsPartDuration: 200ms
 srt: no

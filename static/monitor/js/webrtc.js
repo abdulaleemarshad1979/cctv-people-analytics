@@ -56,7 +56,7 @@ function playWhep(video, path, onEvent) {
 // LL-HLS playback of a MediaMTX path through this app's /hls proxy (the login still protects it): the camera's own video,
 // H.265 too where the browser decodes it. A buffered live edge absorbs RTSP and HTTP jitter.
 function playHls(video, path, onEvent) {
-  const src = `/hls/${encodeURIComponent(path)}/index.m3u8`;
+  const src = `/hls/${encodeURIComponent(path)}/index.m3u8?cookieCheck=1`;   // cookieCheck: MediaMTX otherwise redirects to /<path>/index.m3u8, losing the /hls prefix
   let dead = false, playing = false, hls = null, lastTime = -1, still = 0, recoveries = 0;
   const timer = setTimeout(() => !playing && fail("no video within 25 s"), 25000);
   const watchdog = setInterval(() => {
@@ -81,9 +81,9 @@ function playHls(video, path, onEvent) {
   if (window.Hls && Hls.isSupported()) {
     hls = new Hls({
       enableWorker: true, lowLatencyMode: false,
-      liveSyncDuration: 6, liveMaxLatencyDuration: 12,
+      liveSyncDuration: 10, liveMaxLatencyDuration: 20,   // play ~10 s behind live: the buffer absorbs network and CPU jitter, so the picture never stalls
       maxLiveSyncPlaybackRate: 1.1, liveDurationInfinity: true, startPosition: -1,
-      backBufferLength: 15, maxBufferLength: 20, maxMaxBufferLength: 30,
+      backBufferLength: 15, maxBufferLength: 30, maxMaxBufferLength: 40,
       manifestLoadingMaxRetry: 20, manifestLoadingRetryDelay: 500,
       levelLoadingMaxRetry: 10, levelLoadingRetryDelay: 500,
       fragLoadingMaxRetry: 10, fragLoadingRetryDelay: 500,

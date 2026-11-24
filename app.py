@@ -88,7 +88,7 @@ WHEP_URL = os.getenv("MEDIAMTX_WEBRTC_URL", "").rstrip("/")
 # Live video as LL-HLS from MediaMTX, through this app's login: the camera's own H.264/H.265 passed through (no server CPU),
 # buffered ~1 s by the browser so it plays evenly. Works over the web port alone (WebRTC needs UDP/8189 open).
 HLS_URL = os.getenv("MEDIAMTX_HLS_URL", "").rstrip("/")
-HLS_SETTINGS = {"hls": True, "hlsAddress": ":8888", "hlsVariant": "lowLatency", "hlsSegmentCount": 12,
+HLS_SETTINGS = {"hls": True, "hlsAddress": ":8888", "hlsVariant": "lowLatency", "hlsSegmentCount": 20,
                 "hlsSegmentDuration": "1s", "hlsPartDuration": "200ms"}
 # Density cameras nobody is watching are analysed once every few seconds, so ffmpeg decodes only their keyframes:
 # ~40x less CPU than decoding every frame of a 5 MP H.265 stream (measured), left to the gate counters instead.
