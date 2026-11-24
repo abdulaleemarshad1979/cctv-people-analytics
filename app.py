@@ -458,7 +458,8 @@ class Camera:
 
     def view_loop(self, name):
         """H.264 for browsers that cannot play the camera's H.265: one ffmpeg per copy reads the camera from MediaMTX, shrinks it
-        (TILE_WIDTH for the grid tiles, VIEW_WIDTH for the opened viewer) and publishes <id><name>. Frames never pass through
+        (TILE_WIDTH for the grid tiles, VIEW_WIDTH for the opened viewer) and publishes <id><name>. The tiles read the analysis
+        sub-stream, the viewer's copy the main stream. Frames never pass through
         Python, so it keeps the camera's frame rate (25 at most) without touching line counting. The big copy only runs while a viewer is open."""
         width, kbps = (VIEW_WIDTH, 4000) if name == "_viewhd" else (TILE_WIDTH, 1200)
         proc = None
@@ -467,7 +468,9 @@ class Camera:
                 if proc is None or proc.poll() is not None:
                     if proc is not None:   # source dropped: retry shortly while still watched
                         time.sleep(2)
-                    url = f"{self.hub_base}/{self.cfg['id']}_hd" if self.cfg["id"] + "_hd" in self.registered else self.url()   # the main stream when analysis reads a sub-stream: best quality
+                    # tiles (640 px) are made from the small stream already pulled for counting (4x cheaper to decode, no second camera session);
+                    # only the opened viewer's big copy decodes the main stream
+                    url = f"{self.hub_base}/{self.cfg['id']}_hd" if name == "_viewhd" and self.cfg["id"] + "_hd" in self.registered else self.url()
                     src = (["-rtsp_transport", "tcp", "-timeout", "10000000"] if url.lower().startswith("rtsp://")
                            else [] if url.lower().startswith(STREAM_PREFIXES) else ["-re", "-stream_loop", "-1"])
                     proc = subprocess.Popen(
