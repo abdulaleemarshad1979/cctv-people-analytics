@@ -584,7 +584,7 @@ class Camera:
         return out
 
     def render(self, width=None, item=None):
-        """JPEG of a frame (default: the latest) with the count line and the count only (boxes with SHOW_BOXES=1)."""
+        """JPEG of a frame (default: the latest) with the count only; the count line works in the background and is not drawn (boxes with SHOW_BOXES=1)."""
         with self.lock:
             seq, frame = (item[1], item[2]) if item else (self.frame_seq, self.frame)
             cfg, dets = self.cfg, list(self.dets)
@@ -605,16 +605,6 @@ class Camera:
             frame = frame.copy()
         scale = frame.shape[1] / w
         h, w = frame.shape[:2]
-        if cfg["role"] in TRACKING:
-            a, b = cfg["line"]
-            cv2.line(frame, (round(a[0] * w), round(a[1] * h)), (round(b[0] * w), round(b[1] * h)), YELLOW, 2)
-            # Arrow along the normal that LineCounter treats as the "positive" side; flip for in_side "negative".
-            nx, ny = (a[1] - b[1]) * w, (b[0] - a[0]) * h
-            sign, norm = (1 if cfg["in_side"] == "positive" else -1), math.hypot(nx, ny) or 1
-            mx, my = (a[0] + b[0]) / 2 * w, (a[1] + b[1]) / 2 * h
-            tip = (round(mx + sign * nx / norm * 45), round(my + sign * ny / norm * 45))
-            cv2.arrowedLine(frame, (round(mx), round(my)), tip, YELLOW, 3, tipLength=0.4)
-            cv2.putText(frame, "IN", (tip[0] + 6, tip[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.6, YELLOW, 2)
         for track_id, (x1, y1, x2, y2) in (dets if SHOW_BOXES else ()):
             x1, y1, x2, y2 = x1 * scale, y1 * scale, x2 * scale, y2 * scale
             cv2.rectangle(frame, (round(x1), round(y1)), (round(x2), round(y2)), GREEN, 2)

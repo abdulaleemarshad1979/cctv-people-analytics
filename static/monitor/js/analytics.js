@@ -570,17 +570,7 @@ function drawHud(c) {
   lastHud = c;
   if (hud.hidden) return;
   $("#m-hud-label").textContent = c.role === "inout" ? `IN ${c.in}  OUT ${c.out}` : c.role === "both" ? `IN ${c.in}  OUT ${c.out}  PEOPLE ${c.people}` : c.role === "density" ? `PEOPLE ${c.people}` : "";
-  const svg = $("#m-hud-svg"), w = +hud.dataset.w, h = +hud.dataset.h, cfg = c.config || cur;
-  svg.innerHTML = "";
-  if (!tracks(c) || !cfg || !w) return;
-  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
-  const [[ax, ay], [bx, by]] = cfg.line.map(p => [p[0] * w, p[1] * h]);
-  const nx = ay - by, ny = bx - ax, n = Math.hypot(nx, ny) || 1, sign = cfg.in_side === "positive" ? 1 : -1;   // the side LineCounter calls "positive"
-  const dx = sign * nx / n, dy = sign * ny / n, mx = (ax + bx) / 2, my = (ay + by) / 2, tx = mx + dx * 45, ty = my + dy * 45;
-  const head = `${tx - dx * 14 - dy * 8},${ty - dy * 14 + dx * 8} ${tx},${ty} ${tx - dx * 14 + dy * 8},${ty - dy * 14 - dx * 8}`;
-  svg.innerHTML = `<g stroke="#ffe066" stroke-width="2.5" fill="none" stroke-linecap="round"><line x1="${ax}" y1="${ay}" x2="${bx}" y2="${by}"/><line x1="${mx}" y1="${my}" x2="${tx}" y2="${ty}"/><polyline points="${head}"/></g>
-    <text x="${tx + dx * 8 + 4}" y="${ty + dy * 8 + 5}" fill="#ffe066" font-size="14" font-weight="800" stroke="#000" stroke-width="3" paint-order="stroke">IN</text>`;
-}
+}   // only the count is shown over the video; the count line works in the background (edit it from the snapshot editor)
 new ResizeObserver(fitHud).observe($(".full-view-body"));
 for (const v of [vSub, vHd]) { v.addEventListener("loadedmetadata", fitHud); v.addEventListener("resize", fitHud); }
 
