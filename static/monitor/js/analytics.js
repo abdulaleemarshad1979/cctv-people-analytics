@@ -148,6 +148,7 @@ function startTile(t) {
       return;
     }
     const [mode, path] = modes[i];
+    if (mode === "rtc" && t.noRtc) return attempt(i + 1);   // WebRTC cannot carry the H.265 that HLS just rejected
     if (mode === "h264" && [...tiles.values()].filter(x => x.mode === "h264").length >= MAX_H264_TILES) {
       attempt(i + 1);
       return;
@@ -160,6 +161,7 @@ function startTile(t) {
         t.img.removeAttribute("src");
       } else {
         console.warn(`[video] ${id} ${mode}: ${why}`);
+        if (mode === "hls" && why === "manifestIncompatibleCodecsError") t.noRtc = true;
         t.stop = null; t.mode = null; t.el.dataset.playing = "";
         attempt(i + 1);
       }

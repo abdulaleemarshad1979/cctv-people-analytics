@@ -84,7 +84,7 @@ function playHls(video, path, onEvent) {
       liveSyncDuration: 10, liveMaxLatencyDuration: 20,   // play ~10 s behind live: the buffer absorbs network and CPU jitter, so the picture never stalls
       maxLiveSyncPlaybackRate: 1.1, liveDurationInfinity: true, startPosition: -1,
       backBufferLength: 15, maxBufferLength: 30, maxMaxBufferLength: 40,
-      manifestLoadingMaxRetry: 20, manifestLoadingRetryDelay: 500,
+      manifestLoadingTimeOut: 30000, manifestLoadingMaxRetry: 20, manifestLoadingRetryDelay: 500,   // the H.264 copy's first playlist waits up to ~25 s for its encoder
       levelLoadingMaxRetry: 10, levelLoadingRetryDelay: 500,
       fragLoadingMaxRetry: 10, fragLoadingRetryDelay: 500,
       xhrSetup: xhr => { xhr.withCredentials = true; },

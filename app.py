@@ -23,7 +23,7 @@ import time
 import urllib.error
 import urllib.request
 from collections import deque
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -235,6 +235,14 @@ def hub_ensure(name, url, on_demand, existing):
     status, _ = hub_call("POST", f"/v3/config/paths/{'replace' if have else 'add'}/{name}", want)
     if status != 200:
         raise RuntimeError(f"MediaMTX refused path {name}: HTTP {status}")
+
+
+def published_for(info):
+    """Seconds since MediaMTX path `info` (its API entry) started publishing; a missing or odd timestamp counts as long enough."""
+    try:
+        return (datetime.now(timezone.utc) - datetime.fromisoformat(info["readyTime"].replace("Z", "+00:00"))).total_seconds()
+    except (KeyError, ValueError, TypeError):
+        return 1e9
 
 
 def shrink(frame, width):
@@ -1034,16 +1042,16 @@ def authorize_hls():
     match = re.fullmatch(r"/hls/([A-Za-z0-9_-]+?)(?:_view)?/[A-Za-z0-9_.-]{1,80}\.(?:m3u8|mp4)", path)
     if match is None or match.group(1) not in list(engine.cameras)[:ACTIVE_CAMERA_COUNT]:
         abort(403)
-    if "_view/" in path:   # the H.264 copy: every request keeps its encoder alive; the first playlist waits for it to publish (hls.js never retries a 404)
+    if "_view/" in path:   # the H.264 copy: every request keeps its encoder alive; its first playlist waits until ~9 s of video exist, so the player can start 10 s behind live
         cam = engine.cameras[match.group(1)]
         cam.ensure_view()
-        give_up = time.monotonic() + 20
+        give_up, need = time.monotonic() + 25, 9 if path.endswith("/index.m3u8") else 0
         while path.endswith(".m3u8") and time.monotonic() < give_up:
             try:
                 status, info = hub_call("GET", f"/v3/paths/get/{match.group(1)}_view")
             except OSError:
                 break
-            if status == 200 and info and info.get("ready"):
+            if status == 200 and info and info.get("ready") and published_for(info) >= need:
                 break
             time.sleep(0.5)
     return "", 204

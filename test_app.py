@@ -22,6 +22,11 @@ class AppTests(unittest.TestCase):
         self.assertEqual(c.watch_until, 0.0)   # watch_until made the app decode every 5 MP frame and starved line counting
         self.assertGreater(c.view_until, 0.0)
 
+    def test_published_for_reads_mediamtx_ready_time(self):
+        ago = (app.datetime.now(app.timezone.utc) - app.timedelta(seconds=7)).strftime("%Y-%m-%dT%H:%M:%S.123456789Z")
+        self.assertAlmostEqual(app.published_for({"readyTime": ago}), 7, delta=1.5)
+        self.assertGreater(app.published_for({}), 1e6)   # no timestamp: do not hold the player back
+
     def test_only_active_cameras_appear_in_totals(self):
         engine = app.Engine.__new__(app.Engine)
         engine.thresholds, engine.rate_times, engine.crowd_model, engine.warnings = self.thresholds, [], "test", []
