@@ -61,6 +61,7 @@ chown -R 1000:1000 config 2>/dev/null || true   # the app container runs as uid 
 
 say "Building and starting (first build downloads PyTorch; this takes a few minutes)"
 docker compose up -d --build
+docker compose restart gateway   # nginx.conf is mounted: a changed file is only read on restart
 
 port="$(sed -n 's/^WEB_PORT=\([0-9]*\).*/\1/p' .env | head -1)"
 host="$(hostname -I 2>/dev/null | awk '{print $1}')"

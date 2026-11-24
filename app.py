@@ -321,7 +321,7 @@ class Camera:
         self.grabs = self.reconnects = 0   # decoded frames / re-opens: the health check turns these into source fps and drop-outs
         self.size = None                   # (width, height) the camera sends
         self.keyframes = False             # reading keyframes only (KeyframeReader): an idle density camera
-        self.view_on = False               # view_loop is publishing <id>_view (H.264) to MediaMTX
+        self.view_on, self.view_until = False, 0.0   # view_loop is publishing <id>_view (H.264) to MediaMTX, until view_until
         self.recent = deque(maxlen=10)   # (arrived, seq, frame) while watched: the viewer's de-jitter buffer
         self.jpegs = {}                  # width -> (key, jpeg): viewers and tiles of one frame share one encode
 
@@ -428,8 +428,8 @@ class Camera:
                             self.recent.append((now, self.frame_seq, frame))
 
     def ensure_view(self):
-        """Someone plays <id>_view: keep every frame coming and the H.264 encoder running for a few more seconds."""
-        self.watch_until = time.monotonic() + 6
+        """Someone plays <id>_view: keep the H.264 encoder running for a few more seconds (its playlist is polled ~1/s)."""
+        self.view_until = time.monotonic() + 15
         with self.lock:
             if self.view_on or not FFMPEG or not self.hub_base:
                 return
@@ -437,43 +437,31 @@ class Camera:
         threading.Thread(target=self.view_loop, name=f"view-{self.cfg['id']}", daemon=True).start()
 
     def view_loop(self):
-        """H.264 for browsers that cannot play the camera's H.265: the frames this app already decodes, shrunk to
-        VIEW_WIDTH and encoded once for every viewer (~ the cost of the MJPEG stream, at a tenth of its bandwidth).
-        Writes at a steady VIEW_FPS, repeating a frame when none is new, so the browser's clock never stalls."""
-        proc, last, small, size = None, -1, None, None   # size: (w, h) the encoder was started with
-        tick = time.monotonic()
+        """H.264 for browsers that cannot play the camera's H.265: one ffmpeg reads the camera from MediaMTX, shrinks it to
+        VIEW_WIDTH and publishes <id>_view. Frames never pass through Python (that capped it at ~8 fps under the GIL and starved
+        line counting), and the camera's own timestamps are kept, so it plays at the camera's frame rate."""
+        proc = None
         try:
-            while time.monotonic() < self.watch_until:
-                now = time.monotonic()
-                with self.lock:
-                    recent = list(self.recent) or ([(0.0, self.frame_seq, self.frame)] if self.frame is not None else [])
-                item = next_playout(recent, last, now, 0)
-                if item is not None:
-                    last, small = item[1], shrink(item[2], VIEW_WIDTH)
-                    if size is None:
-                        size = small.shape[1], small.shape[0]
-                if small is not None and small.shape[1::-1] == size:   # (a reconnect may change the picture size: skip until it matches)
-                    if proc is None:
-                        proc = subprocess.Popen(
-                            [FFMPEG, "-nostdin", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "bgr24",
-                             "-s", f"{size[0]}x{size[1]}", "-framerate", str(VIEW_FPS), "-i", "-", "-an",
-                             "-c:v", "libx264", "-preset", "superfast", "-tune", "zerolatency", "-pix_fmt", "yuv420p",
-                             "-g", str(round(VIEW_FPS)), "-crf", "26", "-maxrate", "2500k", "-bufsize", "2500k",
-                             "-f", "rtsp", "-rtsp_transport", "tcp", f"{self.hub_base}/{self.cfg['id']}_view"],
-                            stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
-                    proc.stdin.write(small.tobytes())
-                tick += 1 / VIEW_FPS
-                if tick < now - 1:   # fell a second behind (CPU busy): restart the clock instead of rushing frames out
-                    tick = now
-                time.sleep(max(0.0, tick - time.monotonic()))
-        except OSError as exc:   # ffmpeg exited (MediaMTX down): the viewer falls back; the next request starts again
+            while time.monotonic() < self.view_until:
+                if proc is None or proc.poll() is not None:
+                    if proc is not None:   # source dropped: retry shortly while still watched
+                        time.sleep(2)
+                    url = self.url()
+                    src = (["-rtsp_transport", "tcp", "-timeout", "10000000"] if url.lower().startswith("rtsp://")
+                           else [] if url.lower().startswith(STREAM_PREFIXES) else ["-re", "-stream_loop", "-1"])
+                    proc = subprocess.Popen(
+                        [FFMPEG, "-nostdin", "-loglevel", "error", "-threads", "4", *src, "-i", url, "-an",
+                         "-vf", f"scale='min(iw,{VIEW_WIDTH})':-2", "-c:v", "libx264", "-preset", "veryfast",
+                         "-tune", "zerolatency", "-pix_fmt", "yuv420p", "-threads", "2",
+                         "-force_key_frames", "expr:gte(t,n_forced)",   # a keyframe every 1 s = MediaMTX's 1 s HLS segments
+                         "-crf", "26", "-maxrate", "2500k", "-bufsize", "5000k",
+                         "-f", "rtsp", "-rtsp_transport", "tcp", f"{self.hub_base}/{self.cfg['id']}_view"],
+                        stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                time.sleep(1)
+        except OSError as exc:
             log.warning("%s: H.264 view stopped: %s", self.cfg["name"], exc)
         finally:
             if proc is not None:
-                try:
-                    proc.stdin.close()
-                except OSError:
-                    pass
                 proc.kill()
                 proc.wait()
             with self.lock:
@@ -832,7 +820,6 @@ class Engine:
                 import numpy as np
                 import torch
                 log.info("Loading people model %s", MODEL_PATH)
-                os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 10)
                 model = YOLO(MODEL_PATH)  # one model per worker thread: ultralytics predictors are not thread-safe
                 model.predict(np.zeros((64, 64, 3), np.uint8), imgsz=INOUT_IMGSZ, verbose=False)
                 torch.set_num_threads(1)

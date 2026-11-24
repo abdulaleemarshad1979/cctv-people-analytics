@@ -16,6 +16,12 @@ class AppTests(unittest.TestCase):
         self.assertEqual(app.default_worker_counts(32, 7), (6, 2))
         self.assertEqual(app.default_worker_counts(32, 35), (6, 4))
 
+    def test_playing_the_h264_copy_does_not_force_full_frame_decoding(self):
+        c = cam()   # hub_base None: no encoder thread starts
+        c.ensure_view()
+        self.assertEqual(c.watch_until, 0.0)   # watch_until made the app decode every 5 MP frame and starved line counting
+        self.assertGreater(c.view_until, 0.0)
+
     def test_only_active_cameras_appear_in_totals(self):
         engine = app.Engine.__new__(app.Engine)
         engine.thresholds, engine.rate_times, engine.crowd_model, engine.warnings = self.thresholds, [], "test", []
