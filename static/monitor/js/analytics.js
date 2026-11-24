@@ -444,11 +444,23 @@ const hdBroken = new Set();   // cameras whose main stream would not play: sub-s
 let viewerStop = null, hdStop = null, viewerMode = "mjpeg", liveTimer = null, wantHd = false;
 const hud = $("#m-hud"), vSub = $("#m-video"), vHd = $("#m-video-hd");
 let video = vSub;   // the one on screen: the sub-stream first; HD only on request
+let playbackTransport = "HLS", measuredVideo = null, measuredFrames = 0, measuredAt = 0;
+setInterval(() => {
+  if (!openId || viewerMode !== "rtc" || document.hidden || !video.getVideoPlaybackQuality) return;
+  const now = performance.now(), frames = video.getVideoPlaybackQuality().totalVideoFrames;
+  if (measuredVideo === video && measuredAt && !video.paused && now > measuredAt) {
+    const fps = Math.max(0, (frames - measuredFrames) * 1000 / (now - measuredAt));
+    $("#m-playback").textContent = `${fps.toFixed(1)} fps · ${playbackTransport} · ${video.videoWidth}×${video.videoHeight}` + (playbackTransport.includes("HLS") ? " · video buffered ~6s; counts live" : "");
+  }
+  measuredVideo = video; measuredFrames = frames; measuredAt = now;
+}, 2000);
 
 function setLive(show) {   // the live picture (video or MJPEG) on / off, e.g. off while the snapshot editor is open
   for (const v of [vSub, vHd]) v.style.display = show && viewerMode === "rtc" && v === video ? "block" : "none";
   $("#m-live").style.display = show && viewerMode !== "rtc" ? "block" : "none";
   hud.hidden = !(show && viewerMode === "rtc");
+  if (show && viewerMode === "rtc" && measuredVideo !== video)
+    $("#m-playback").textContent = video.getVideoPlaybackQuality ? `${playbackTransport} · measuring FPS…` : `${playbackTransport} · browser FPS unavailable`;
   fitHud();
 }
 
@@ -456,35 +468,43 @@ function stopViewer() {
   if (viewerStop) viewerStop();
   if (hdStop) hdStop();
   viewerStop = hdStop = null; viewerMode = "mjpeg"; video = vSub;
+  measuredVideo = null; measuredAt = 0;
   $("#m-live").src = "data:,";   // drops the MJPEG connection
   vSub.style.display = vHd.style.display = "none"; hud.hidden = true;
 }
 
 function offerHd(id) {
   const c = data && data.cameras.find(x => x.id === id);
-  if (!wantHd || !c?.play_hd || hdBroken.has(id) || hdStop || openId !== id) return;
+  if (!wantHd || !(c?.hls_hd || c?.play_hd) || hdBroken.has(id) || hdStop || openId !== id) return;
   $("#m-hd").textContent = "Loading HD…";
-  const path = c.play_hd, baseline = vHd.getVideoPlaybackQuality().totalVideoFrames;
-  hdStop = playWhep(vHd, path, (ev, why) => {
-    if (openId !== id) return;
-    if (ev === "playing") setTimeout(() => {
-      if (!hdStop || openId !== id) return;
-      if (vHd.getVideoPlaybackQuality().totalVideoFrames - baseline < 8) {
-        hdStop(); hdStop = null; hdBroken.add(id); wantHd = false;
-        $("#m-hd").textContent = "HD unavailable"; $("#m-hd").disabled = true;
-        return;
-      }
-      viewerMode = "rtc"; video = vHd; $("#m-live").src = "data:,"; setLive(true);
-      if (viewerStop) viewerStop(); viewerStop = null;
-      $("#m-hd").textContent = "View standard";
-    }, 2000);
-    else {
-      console.warn(`[video] HD ${path}: ${why}`);
-      hdStop = null; hdBroken.add(id); wantHd = false;
+  const options = [c.hls_hd && ["HD HLS", c.hls_hd, playHls], c.play_hd && ["HD WebRTC", c.play_hd, playWhep]].filter(Boolean);
+  const attempt = index => {
+    if (index >= options.length) {
+      hdBroken.add(id); wantHd = false;
       $("#m-hd").textContent = "HD unavailable"; $("#m-hd").disabled = true;
       if (video === vHd) startViewer(id);
+      return;
     }
-  });
+    const [mode, path, play] = options[index], baseline = vHd.getVideoPlaybackQuality().totalVideoFrames;
+    hdStop = play(vHd, path, (ev, why) => {
+      if (openId !== id || !wantHd) return;
+      if (ev === "playing") setTimeout(() => {
+        if (!hdStop || openId !== id || !wantHd) return;
+        if (vHd.getVideoPlaybackQuality().totalVideoFrames - baseline < 8) {
+          hdStop(); hdStop = null; attempt(index + 1); return;
+        }
+        viewerMode = "rtc"; video = vHd; playbackTransport = mode; $("#m-live").src = "data:,"; setLive(true);
+        if (viewerStop) viewerStop(); viewerStop = null;
+        $("#m-hd").textContent = "View standard";
+      }, 2000);
+      else {
+        console.warn(`[video] ${mode} ${path}: ${why}`);
+        hdStop = null;
+        if (video === vHd) attempt(options.length); else attempt(index + 1);
+      }
+    });
+  };
+  attempt(0);
 }
 
 $("#m-hd").onclick = () => {
@@ -496,12 +516,13 @@ $("#m-hd").onclick = () => {
 
 function startViewer(id) {
   stopViewer();
+  $("#m-playback").textContent = "Connecting video…";
   const c = data && data.cameras.find(x => x.id === id);
   const sub = c && c.play, hd = c && c.play_hd;
-  $("#m-hd").hidden = !sub || !hd;
+  $("#m-hd").hidden = !sub || !(hd || c?.hls_hd);
   $("#m-hd").disabled = hdBroken.has(id);
   $("#m-hd").textContent = hdBroken.has(id) ? "HD unavailable" : wantHd ? "View standard" : "View HD";
-  const mjpeg = () => { viewerMode = "mjpeg"; $("#m-live").src = `/api/cameras/${id}/stream.mjpg`; setLive(true); };
+  const mjpeg = () => { viewerMode = "mjpeg"; $("#m-playback").textContent = "MJPEG fallback · source fps not measured"; $("#m-live").src = `/api/cameras/${id}/stream.mjpg`; setLive(true); };
   const start = (path, el, onPlaying, onFail) => playWhep(el, path, (ev, why) => {
     if (openId !== id) return;
     if (ev === "playing") onPlaying(); else { console.warn(`[video] ${path}: ${why}`); onFail(); }
@@ -509,18 +530,24 @@ function startViewer(id) {
   const rtc = () => {
     if (!sub && !hd) return mjpeg();
     viewerStop = start(sub || hd, vSub, () => {
-      viewerMode = "rtc"; video = vSub; $("#m-live").src = "data:,"; setLive(true);
+      viewerMode = "rtc"; video = vSub; playbackTransport = "WebRTC"; $("#m-live").src = "data:,"; setLive(true);
       if (sub) offerHd(id);
     }, () => { viewerStop = null; mjpeg(); });
   };
   // Smoothest first: LL-HLS of the camera's own video (H.265 needs a browser that decodes it), then the server's
   // H.264 copy over LL-HLS (plays everywhere), then WebRTC, then MJPEG.
-  const hls = paths => {
+  const hls = (paths, retry = 0) => {
     if (!paths.length) return rtc();
+    let played = false;
     viewerStop = playHls(vSub, paths[0], (ev, why) => {
       if (openId !== id) return;
-      if (ev === "playing") { viewerMode = "rtc"; video = vSub; $("#m-live").src = "data:,"; setLive(true); offerHd(id); }
-      else { console.warn(`[video] HLS ${paths[0]}: ${why}`); viewerStop = null; hls(paths.slice(1)); }
+      if (ev === "playing") { played = true; viewerMode = "rtc"; video = vSub; playbackTransport = paths[0] === c?.hls ? "HLS" : "H.264 HLS"; $("#m-live").src = "data:,"; setLive(true); offerHd(id); }
+      else {
+        console.warn(`[video] HLS ${paths[0]}: ${why}`);
+        viewerStop = null;
+        if (played && retry < 2) setTimeout(() => { if (openId === id) hls(paths, retry + 1); }, 1000);
+        else hls(paths.slice(1));
+      }
     });
   };
   hls([c && c.hls, c && c.hls_h264].filter(Boolean));

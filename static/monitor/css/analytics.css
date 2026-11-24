@@ -96,10 +96,11 @@ button { font: inherit; }
 .full-view-backdrop { position: absolute; inset: 0; background: rgba(15,23,42,.55); backdrop-filter: blur(6px); }
 .full-view-content { position: relative; z-index: 10; width: 100%; max-width: 1380px; height: 92vh; background: var(--bg-tile); border-radius: 14px;
   border: 1px solid var(--border-color); box-shadow: 0 25px 50px -12px rgba(15,23,42,.35); display: flex; flex-direction: column; overflow: hidden; }
-.full-view-header { background: var(--bg-tile-header); padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border-color); flex-shrink: 0; }
+.full-view-header { background: var(--bg-tile-header); padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; border-bottom: 1px solid var(--border-color); flex-shrink: 0; }
 .full-view-title-group { display: flex; align-items: center; gap: 12px; }
 .full-view-badge { background: var(--accent-blue); color: #fff; font-size: 10px; font-weight: 800; padding: 3px 8px; border-radius: 9999px; letter-spacing: .05em; text-transform: uppercase; }
 .full-view-title { color: var(--text-main); font-size: 16px; font-weight: 700; }
+.playback-stats { color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .full-view-close-btn { background: #fff; color: var(--text-muted); border: 1px solid var(--border-color); width: 32px; height: 32px; border-radius: 50%; font-size: 15px; font-weight: 700; cursor: pointer; }
 .full-view-close-btn:hover { background: #fff1f2; color: #be123c; border-color: #fda4af; }
 .full-view-layout { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 360px; }

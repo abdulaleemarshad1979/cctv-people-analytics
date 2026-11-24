@@ -162,6 +162,21 @@ class AppTests(unittest.TestCase):
             app.AUTH = old
             app.time.sleep = real_sleep
 
+    def test_hls_gateway_checks_login_and_known_camera(self):
+        engine = app.Engine.__new__(app.Engine)
+        engine.cameras = {"cam01": cam(id="cam01")}
+        old_engine, app.engine = app.engine, engine
+        client = app.app.test_client()
+        try:
+            path = {"X-Original-URI": "/hls/cam01/index.m3u8"}
+            self.assertEqual(client.get("/authz", headers=path).status_code, 401)
+            client.post("/login", json={"username": app.AUTH[0], "password": app.AUTH[1]})
+            self.assertEqual(client.get("/authz", headers=path).status_code, 204)
+            self.assertEqual(client.get("/authz", headers={"X-Original-URI": "/hls/cam02/index.m3u8"}).status_code, 403)
+            self.assertEqual(client.get("/authz", headers={"X-Original-URI": "/hls/cam01/../../secret"}).status_code, 403)
+        finally:
+            app.engine = old_engine
+
     def test_connection_validation_and_url(self):
         conn = app.validated_connection({"host": "192.168.1.10", "user": "admin", "password": "p@ss/#", "path": "/ch1"})
         self.assertEqual(app.connection_url(conn), "rtsp://admin:p%40ss%2F%23@192.168.1.10:554/ch1")

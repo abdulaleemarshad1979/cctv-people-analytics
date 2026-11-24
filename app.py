@@ -88,7 +88,7 @@ WHEP_URL = os.getenv("MEDIAMTX_WEBRTC_URL", "").rstrip("/")
 # Live video as LL-HLS from MediaMTX, through this app's login: the camera's own H.264/H.265 passed through (no server CPU),
 # buffered ~1 s by the browser so it plays evenly. Works over the web port alone (WebRTC needs UDP/8189 open).
 HLS_URL = os.getenv("MEDIAMTX_HLS_URL", "").rstrip("/")
-HLS_SETTINGS = {"hls": True, "hlsAddress": ":8888", "hlsVariant": "lowLatency", "hlsSegmentCount": 7,
+HLS_SETTINGS = {"hls": True, "hlsAddress": ":8888", "hlsVariant": "lowLatency", "hlsSegmentCount": 12,
                 "hlsSegmentDuration": "1s", "hlsPartDuration": "200ms"}
 # Density cameras nobody is watching are analysed once every few seconds, so ffmpeg decodes only their keyframes:
 # ~40x less CPU than decoding every frame of a 5 MP H.265 stream (measured), left to the gate counters instead.
@@ -567,6 +567,7 @@ class Camera:
                "resolution": f"{self.size[0]}x{self.size[1]}" if self.size else None,
                "play": self.play_path(), "play_hd": self.play_path(hd=True),
                "hls": self.play_path() if HLS_URL and engine.hls_on else None,
+               "hls_hd": self.play_path(hd=True) if HLS_URL and engine.hls_on else None,
                "hls_h264": f"{cfg['id']}_view" if HLS_URL and engine.hls_on and FFMPEG and self.hub_base else None,
                "target_fps": TRACK_FPS if cfg["role"] in TRACKING else 0}
         if cfg["role"] in TRACKING:
@@ -976,7 +977,7 @@ def detail(cam):
 
 # Login: one account, a cookie session and the CCTV_MONITOR-style login page.
 AUTH = (os.getenv("LOGIN_USER", "admin"), os.getenv("LOGIN_PASSWORD", "admin123"))
-PUBLIC_PATHS = {"/login", "/logout", "/healthz", "/static/monitor/img/ap_police_logo.png"}  # logo is shown on the login page
+PUBLIC_PATHS = {"/login", "/logout", "/healthz", "/authz", "/static/monitor/img/ap_police_logo.png"}  # logo is shown on the login page
 app.config.update(SESSION_COOKIE_NAME="analytics_session", SESSION_COOKIE_SAMESITE="Lax",
                   PERMANENT_SESSION_LIFETIME=timedelta(hours=12))
 
@@ -1035,6 +1036,18 @@ def logout():
 @app.get("/healthz")
 def healthz():
     return "ok"
+
+
+@app.get("/authz")
+def authorize_hls():
+    """Internal gateway subrequest: authorize one HLS path without returning its bytes through Python."""
+    if session.get("user") != AUTH[0]:
+        abort(401)
+    path = request.headers.get("X-Original-URI", "").split("?", 1)[0]
+    match = re.fullmatch(r"/hls/([A-Za-z0-9_-]+?)(?:_view)?/[A-Za-z0-9_.-]{1,80}\.(?:m3u8|mp4)", path)
+    if match is None or match.group(1) not in list(engine.cameras)[:ACTIVE_CAMERA_COUNT]:
+        abort(403)
+    return "", 204
 
 
 @app.get("/")

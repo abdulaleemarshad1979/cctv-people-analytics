@@ -54,10 +54,10 @@ function playWhep(video, path, onEvent) {
 }
 
 // LL-HLS playback of a MediaMTX path through this app's /hls proxy (the login still protects it): the camera's own video,
-// H.265 too where the browser decodes it, buffered ~1 s so frames come out evenly. Same contract as playWhep.
+// H.265 too where the browser decodes it. A buffered live edge absorbs RTSP and HTTP jitter.
 function playHls(video, path, onEvent) {
   const src = `/hls/${encodeURIComponent(path)}/index.m3u8`;
-  let dead = false, playing = false, hls = null, lastTime = -1, still = 0;
+  let dead = false, playing = false, hls = null, lastTime = -1, still = 0, recoveries = 0;
   const timer = setTimeout(() => !playing && fail("no video within 25 s"), 25000);
   const watchdog = setInterval(() => {
     if (!playing || document.hidden) return;
@@ -79,10 +79,21 @@ function playHls(video, path, onEvent) {
 
   video.onplaying = () => { if (!playing && !dead) { playing = true; onEvent("playing"); } };
   if (window.Hls && Hls.isSupported()) {
-    hls = new Hls({lowLatencyMode: true, backBufferLength: 10, manifestLoadingMaxRetry: 20, manifestLoadingRetryDelay: 1000});
+    hls = new Hls({
+      enableWorker: true, lowLatencyMode: false,
+      liveSyncDuration: 6, liveMaxLatencyDuration: 12,
+      maxLiveSyncPlaybackRate: 1.1, liveDurationInfinity: true, startPosition: -1,
+      backBufferLength: 15, maxBufferLength: 20, maxMaxBufferLength: 30,
+      manifestLoadingMaxRetry: 20, manifestLoadingRetryDelay: 500,
+      levelLoadingMaxRetry: 10, levelLoadingRetryDelay: 500,
+      fragLoadingMaxRetry: 10, fragLoadingRetryDelay: 500,
+      xhrSetup: xhr => { xhr.withCredentials = true; },
+    });
     hls.on(Hls.Events.ERROR, (_, d) => {
       if (!d.fatal) return;
-      if (playing && d.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();   // a decode hiccup after it played: recover in place
+      if (playing && d.type === Hls.ErrorTypes.MEDIA_ERROR && recoveries++ < 2) {
+        hls.recoverMediaError(); video.play().catch(() => {});
+      }
       else fail(d.details);   // e.g. a codec this browser cannot decode (H.265 without hardware support)
     });
     hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));

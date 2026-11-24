@@ -6,7 +6,7 @@
 curl -fsSL https://raw.githubusercontent.com/abdulaleemarshad1979/cctv-people-analytics/main/install.sh | sudo bash
 ```
 
-This installs Docker if missing, clones the repo to `/opt/cctv-people-analytics`, downloads the DM-Count and CSRNet weights (checksum-verified), and starts two containers: **MediaMTX** (RTSP hub) and the **analytics dashboard**. It prints the dashboard URL and the login: user `admin`, password `admin123`. **Change the password** with `sudo /opt/cctv-people-analytics/scripts/set-password.sh` (asks for the new one) or `sudo /opt/cctv-people-analytics/scripts/set-password.sh 'NewPassword'`. The first build takes a few minutes (PyTorch). Run the same command again to update.
+This installs Docker if missing, clones the repo to `/opt/cctv-people-analytics`, downloads the DM-Count and CSRNet weights (checksum-verified), and starts **MediaMTX** (RTSP/HLS hub), **analytics** (counting and login), and an **Nginx gateway** (authenticated HLS delivery). It prints the dashboard URL and the login: user `admin`, password `admin123`. **Change the password** with `sudo /opt/cctv-people-analytics/scripts/set-password.sh` (asks for the new one) or `sudo /opt/cctv-people-analytics/scripts/set-password.sh 'NewPassword'`. The first build takes a few minutes (PyTorch). Run the same command again to update.
 
 Then connect your cameras **from the website**: sign in, click **Connect cameras** (top bar), and either
 
@@ -32,6 +32,8 @@ The current deployment uses **Cameras 01–07** (`ACTIVE_CAMERA_COUNT=7`). Camer
 | Restart | `sudo docker compose restart` |
 | Stop | `sudo docker compose down` |
 | Change port, login or tuning | edit `.env`, then `sudo docker compose up -d` |
+| Deploy a new revision | `sudo git pull --ff-only origin main && sudo docker compose up -d --build` (from `/opt/cctv-people-analytics`) |
+| Check codec, resolution and source FPS for all seven cameras | `sudo docker compose exec -T analytics python scripts/diagnose_streams.py` |
 
 Your camera list and settings live in `config/` and weights in `weights/`; neither is overwritten by updates. The image is CPU-only. The dashboard has a login page (cookie session, 12 h, with a Logout button); the default `admin` / `admin123` is public in this repo, so change it. Do not expose port 5000 to the internet; keep it on your LAN/VPN, and put it behind HTTPS if it leaves a trusted network.
 
@@ -105,7 +107,7 @@ Edit `cameras.json` (the UI also saves role, name, zone, line and calibration ba
 
 The video is kept clean and cheap: the count line plus the count only, with no heat maps, boxes or track IDs (set `SHOW_BOXES=1` to draw boxes while tuning a gate). The dashboard stays smooth because analysis never blocks it:
 
-- **Live video (MediaMTX):** visible tiles (up to 16) try LL-HLS of the camera's own stream, then WebRTC, then the shared H.264 HLS copy (limited to eight tiles to protect the CPU). Snapshots remain the last fallback. An opened camera stays on its sub-stream; **View HD** requests the main stream when the NVR provides one. The video and inference run independently: smooth playback does not prove that counting is fast enough.
+- **Live video (MediaMTX):** visible tiles (up to 16) play the camera's HLS stream through an authenticated Nginx gateway that forwards playlist and segment bytes directly to MediaMTX. The browser buffers about 6 seconds to smooth irregular network arrivals; this trades live delay for fewer stalls. WebRTC, a shared H.264 HLS copy (up to eight tiles), and JPEG snapshots remain fallbacks. An opened camera stays on its sub-stream; **View HD** requests the main stream when available. Its viewer shows measured browser playback FPS alongside the transport. Inference has a separate frame path and can run below the source video FPS.
 - **One session per camera:** cameras entered on *Connect cameras* are registered in MediaMTX by the app (control API), and analysis reads them from MediaMTX too, so the NVR serves each stream once however many people watch. If MediaMTX is unreachable the app reads the cameras directly again.
 - **MJPEG fallback viewer:** up to 25 fps (`VIEW_FPS`), frames encoded once and shared between viewers; `VIEW_DELAY_MS` (default 0) can hold frames to spread network bursts, at that much extra delay. On this machine's looping test stream the fallback measured 24 fps with the longest gap 100-120 ms, no better or worse than before, so it is a fallback, not the smooth path.
 - **Worker sizing for a 32 GB server:** automatic defaults use about 35 % of available CPU cores for detector workers (at most 6) and 25 % for crowd-model workers (at most 4), capped by the number of active cameras. For 7 active cameras, 32 usable cores would start 6 detector and 2 crowd workers; 8 usable cores would start 3 and 2. Each crowd worker loads its own models; loading is staggered to reduce the memory spike at startup. Actual CPU count, camera resolution, codec, and network determine throughput; RAM and disk capacity alone do not. `INOUT_WORKERS` and `CROWD_WORKERS` override these defaults. Crowd workers run at lower priority than the gate tracker. The web process allows 64 concurrent request threads by default (`WEB_THREADS`); raise this only when measured viewer traffic needs it.
