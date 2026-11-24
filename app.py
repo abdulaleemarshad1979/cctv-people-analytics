@@ -49,11 +49,25 @@ INOUT_CONF = float(os.getenv("INOUT_CONFIDENCE", "0.35"))   # gate detector conf
 # crossing 10 % of the frame per second). Crowd count (DM-Count + CSRNet fusion, ~2.9 core-seconds per frame):
 # one count per density camera every CROWD_INTERVAL_S seconds.
 # This server is dedicated to the cameras, so the cores are split between the two kinds of work by core count
-# (override with INOUT_WORKERS / CROWD_WORKERS): detector workers ~35 % (~28 checks/s each), crowd workers ~25 %
-# (each counts 1 camera per ~3 s, so N density cameras every 30 s need about N / 10 workers), the rest decodes video and serves the web.
+# (override with INOUT_WORKERS / CROWD_WORKERS): reserve cores for camera decoding and
+# web video. Each crowd worker holds its own copy of both models in RAM. Beyond six
+# detector / four crowd workers, extra model copies can make a 32 GB server swap or
+# restart while doing little for throughput.
 CORES = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 4)
-INOUT_WORKERS = int(os.getenv("INOUT_WORKERS") or max(1, round(CORES * 0.35)))   # empty = auto (docker compose passes blanks)
-CROWD_WORKERS = int(os.getenv("CROWD_WORKERS") or max(1, round(CORES * 0.25)))
+ACTIVE_CAMERA_COUNT = max(1, int(os.getenv("ACTIVE_CAMERA_COUNT", "7")))
+
+
+def default_worker_counts(cores, active_cameras):
+    # At this input size a crowd process typically handles about five cameras
+    # per 30 s round. Do not load four model copies for seven live feeds.
+    gates = min(6, active_cameras, max(1, round(cores * 0.35)))
+    crowd = min(4, max(1, math.ceil(active_cameras / 5)), max(1, round(cores * 0.25)))
+    return gates, crowd
+
+
+DEFAULT_INOUT_WORKERS, DEFAULT_CROWD_WORKERS = default_worker_counts(CORES, ACTIVE_CAMERA_COUNT)
+INOUT_WORKERS = int(os.getenv("INOUT_WORKERS") or DEFAULT_INOUT_WORKERS)
+CROWD_WORKERS = int(os.getenv("CROWD_WORKERS") or DEFAULT_CROWD_WORKERS)
 TRACK_FPS = float(os.getenv("INOUT_FPS", "10"))
 CROWD_INTERVAL = float(os.getenv("CROWD_INTERVAL_S", "30"))
 SHOW_BOXES = os.getenv("SHOW_BOXES", "0") == "1"   # boxes and track ids on the video; off by default (cleaner, cheaper)
@@ -535,12 +549,15 @@ class Camera:
     def rate(self):
         with self.lock:
             t = list(self.times)
-        return round((len(t) - 1) / (t[-1] - t[0]), 2) if len(t) > 1 and t[-1] > t[0] else 0.0
+        if len(t) < 2 or time.monotonic() - t[-1] > max(3, 3 / TRACK_FPS):
+            return 0.0
+        return round((len(t) - 1) / (t[-1] - t[0]), 2) if t[-1] > t[0] else 0.0
 
     def stats(self, thresholds):
         with self.lock:
             cfg, people, status = self.cfg, self.people, self.status
             counts = self.counter.counts()
+            tracked_at = self.times[-1] if self.times else None
         counted_at, visible = self.counted_at, self.visible
         with self.lock:
             detected = self.detector_count()
@@ -553,7 +570,8 @@ class Camera:
                "hls_h264": f"{cfg['id']}_view" if HLS_URL and engine.hls_on and FFMPEG and self.hub_base else None,
                "target_fps": TRACK_FPS if cfg["role"] in TRACKING else 0}
         if cfg["role"] in TRACKING:
-            out.update(counts, error=self.error)
+            out.update(counts, error=self.error,
+                       tracked_ago=None if tracked_at is None else round(time.monotonic() - tracked_at, 1))
         if cfg["role"] in DENSITY:
             area = cfg["area_m2"] or ground_area(cfg)
             density = round(people / area, 2) if area else None
@@ -678,6 +696,7 @@ class Engine:
         self.active_head_jobs = 0
         self.gates_since_head = 0
         self.crowd_model = "loading"
+        self.detector_error = None
         self.warnings = []
 
     def sync_relay(self):
@@ -689,14 +708,15 @@ class Engine:
             existing = {item["name"]: item for item in listing["items"]}
             if HLS_URL and not self.hls_on:   # an older config/mediamtx.yml has HLS off: switch it on here
                 self.hls_on = hub_call("PATCH", "/v3/config/global/patch", HLS_SETTINGS)[0] == 200
-            for cam in self.cameras.values():
+            for index, cam in enumerate(self.cameras.values()):
+                active = index < ACTIVE_CAMERA_COUNT
                 wanted = cam.hub_sources()
                 for path, (url, on_demand) in wanted.items():
-                    hub_ensure(path, url, on_demand, existing)
+                    hub_ensure(path, url, on_demand or not active, existing)
                 for path in cam.registered - set(wanted):
                     hub_call("POST", f"/v3/config/paths/delete/{path}")
                 cam.registered = set(wanted)
-                self.set_hub(cam, bool(wanted) and time.monotonic() >= cam.hub_retry_at)
+                self.set_hub(cam, active and bool(wanted) and time.monotonic() >= cam.hub_retry_at)
             if self.relay_down:
                 log.info("MediaMTX control API reachable again")
             self.relay_down = False
@@ -729,14 +749,20 @@ class Engine:
         if RELAY_API:
             self.sync_relay()   # before the capture threads start, so they connect once, to the right address
             threading.Thread(target=self.relay_loop, name="relay", daemon=True).start()
-        for cam in self.cameras.values():
+        active = list(self.cameras.values())[:ACTIVE_CAMERA_COUNT]
+        for cam in list(self.cameras.values())[ACTIVE_CAMERA_COUNT:]:
+            cam.set_status("inactive")  # keep saved settings; no RTSP connection or worker job
+        for cam in active:
             threading.Thread(target=cam.capture, name=f"cap-{cam.cfg['id']}", daemon=True).start()
         self.pick_lock = threading.Lock()
-        log.info("%d cores: %d detector workers, %d crowd workers", CORES, INOUT_WORKERS, CROWD_WORKERS)
+        log.info("%d active cameras, %d cores: %d detector workers, %d crowd workers",
+                 len(active), CORES, INOUT_WORKERS, CROWD_WORKERS)
         for k in range(INOUT_WORKERS):
             threading.Thread(target=self.infer_loop, name=f"inference-{k}", daemon=True).start()
+            time.sleep(0.15)  # avoid all YOLO models allocating their first inference together
         for k in range(CROWD_WORKERS):
             threading.Thread(target=self.crowd_loop, name=f"crowd-{k}", daemon=True).start()
+            time.sleep(0.25)  # model checkpoints can temporarily need twice their steady RAM while loading
         threading.Thread(target=self.health_loop, name="health", daemon=True).start()
 
     def health_loop(self):
@@ -746,7 +772,7 @@ class Engine:
             time.sleep(HEALTH_S)
             now = time.monotonic()
             found, offline, span = [], [], now - t0
-            for cid, cam in self.cameras.items():
+            for cid, cam in list(self.cameras.items())[:ACTIVE_CAMERA_COUNT]:
                 grabs, reconnects = last.get(cid, (cam.grabs, cam.reconnects))
                 last[cid] = cam.grabs, cam.reconnects
                 if cam.cfg["role"] == "off" or now - t0 < HEALTH_S:
@@ -779,7 +805,7 @@ class Engine:
         """Reserve detector capacity for gates while still servicing due density counts."""
         now = time.monotonic()
         with self.pick_lock:
-            cams = [c for c in self.cameras.values() if not c.busy and c.frame is not None]
+            cams = [c for c in list(self.cameras.values())[:ACTIVE_CAMERA_COUNT] if not c.busy and c.frame is not None]
             heads = [c for c in cams if c.cfg["role"] in DENSITY and c.detect_due <= now]
             gates = [c for c in cams if c.cfg["role"] in TRACKING and c.frame_seq != c.infer_seq and c.due <= now]
             # Density checks can become overdue together. Let at most one run
@@ -799,14 +825,22 @@ class Engine:
             return job
 
     def infer_loop(self):
-        from ultralytics import YOLO
-        log.info("Loading people model %s", MODEL_PATH)
-        os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 10)  # per thread on Linux: inference yields the cores to video decode and the viewer
-        model = YOLO(MODEL_PATH)  # one model per worker thread: ultralytics predictors are not thread-safe
-        import numpy as np
-        import torch
-        model.predict(np.zeros((64, 64, 3), np.uint8), imgsz=INOUT_IMGSZ, verbose=False)  # ultralytics resets torch to 7 threads on its first predict
-        torch.set_num_threads(1)  # per thread: 1 thread = ~48 ms/frame at 480 px, and the workers share the cores
+        while True:
+            try:
+                from ultralytics import YOLO
+                import numpy as np
+                import torch
+                log.info("Loading people model %s", MODEL_PATH)
+                os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 10)
+                model = YOLO(MODEL_PATH)  # one model per worker thread: ultralytics predictors are not thread-safe
+                model.predict(np.zeros((64, 64, 3), np.uint8), imgsz=INOUT_IMGSZ, verbose=False)
+                torch.set_num_threads(1)
+                self.detector_error = None
+                break
+            except Exception as exc:
+                self.detector_error = f"{type(exc).__name__}: {exc}"[:200]
+                log.exception("Gate detector failed to start; retrying")
+                time.sleep(15)
         while True:
             job = self.pick_detector_job()
             if job is None:
@@ -835,7 +869,7 @@ class Engine:
     def pick_crowd_job(self):
         now = time.monotonic()
         with self.pick_lock:
-            ready = [c for c in self.cameras.values()
+            ready = [c for c in list(self.cameras.values())[:ACTIVE_CAMERA_COUNT]
                      if c.cfg["role"] in DENSITY and c.frame is not None and c.crowd_due <= now and not c.crowd_busy]
             if not ready:
                 return None
@@ -891,7 +925,7 @@ class Engine:
         return round((len(t) - 1) / (t[-1] - t[0]), 1) if len(t) > 1 and t[-1] > t[0] else 0.0
 
     def summary(self):
-        cams = [c.stats(self.thresholds) for c in self.cameras.values()]
+        cams = [c.stats(self.thresholds) for c in list(self.cameras.values())[:ACTIVE_CAMERA_COUNT]]
         locations = {}
         for name in LOCATIONS:
             here = [c for c in cams if c["location"] == name]
@@ -916,7 +950,9 @@ class Engine:
                            "peak_camera": peak["name"] if peak else None,
                            "online": sum(c["status"] == "live" for c in cams),
                            "total": len(cams), "infer_per_s": self.infer_rate(),
-                           "crowd_model": self.crowd_model, "warnings": self.warnings,
+                           "crowd_model": self.crowd_model,
+                           "warnings": (["Gate detector failed to start: " + self.detector_error]
+                                        if getattr(self, "detector_error", None) else []) + self.warnings,
                            "cpu": {"cores": CORES, "detector_workers": INOUT_WORKERS, "crowd_workers": CROWD_WORKERS,
                                    "load": [round(x, 1) for x in os.getloadavg()]}}}
 

@@ -55,6 +55,12 @@ class AnalyticsTests(unittest.TestCase):
         self.walk(counter, (60,), at=0.6)
         self.assertEqual(counter.counts()["in"], 1)
 
+    def test_slow_detector_tracks_person_across_line(self):
+        counter = LineCounter([[0.1, 0.5], [0.9, 0.5]])
+        counter.update([(40, 5, 60, 35)], 100, 100, 10)
+        counter.update([(40, 35, 60, 65)], 100, 100, 10.7)
+        self.assertEqual(counter.counts()["in"], 1)
+
     def test_person_height_calibration(self):
         def image_y(ratio):
             return (1 + math.tan(math.atan(ratio) - math.radians(30)) /

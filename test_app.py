@@ -11,6 +11,36 @@ def cam(**over):
 class AppTests(unittest.TestCase):
     thresholds = {"warning": 2.0, "critical": 4.0}
 
+    def test_worker_defaults_leave_room_for_video_and_cap_model_copies(self):
+        self.assertEqual(app.default_worker_counts(8, 7), (3, 2))
+        self.assertEqual(app.default_worker_counts(32, 7), (6, 2))
+        self.assertEqual(app.default_worker_counts(32, 35), (6, 4))
+
+    def test_only_active_cameras_appear_in_totals(self):
+        engine = app.Engine.__new__(app.Engine)
+        engine.thresholds, engine.rate_times, engine.crowd_model, engine.warnings = self.thresholds, [], "test", []
+        engine.cameras = {str(i): cam(id=str(i)) for i in range(app.ACTIVE_CAMERA_COUNT + 1)}
+        self.assertEqual(engine.summary()["totals"]["total"], app.ACTIVE_CAMERA_COUNT)
+
+    def test_inactive_camera_relay_does_not_pull_its_nvr(self):
+        engine = app.Engine.__new__(app.Engine)
+        engine.cameras = {str(i): cam(id=str(i)) for i in range(app.ACTIVE_CAMERA_COUNT + 1)}
+        for c in engine.cameras.values():
+            c.hub_base = "rtsp://mtx:8554"
+            c.conn = app.validated_connection({"host": "10.0.0.5", "path": "/live"})
+        engine.relay_down, engine.hls_on = False, False
+        seen = []
+        old_call, old_ensure, old_hls = app.hub_call, app.hub_ensure, app.HLS_URL
+        try:
+            app.HLS_URL = ""
+            app.hub_call = lambda method, path, body=None: (200, {"items": []})
+            app.hub_ensure = lambda name, url, demand, existing: seen.append((name, demand))
+            engine.sync_relay()
+        finally:
+            app.hub_call, app.hub_ensure, app.HLS_URL = old_call, old_ensure, old_hls
+        self.assertEqual(seen[0], ("0", False))
+        self.assertEqual(seen[-1], (str(app.ACTIVE_CAMERA_COUNT), True))
+
     def test_validation_rejects_bad_input(self):
         for bad in ({"role": "gate"}, {"name": " "}, {"area_m2": 0}, {"tilt_deg": 120},
                     {"line": [[0.1, 0.1], [0.11, 0.1]]}):
@@ -55,6 +85,17 @@ class AppTests(unittest.TestCase):
         stats = c.stats(self.thresholds)
         self.assertEqual((stats["in"], stats["out"], stats["level"]), (0, 0, "safe"))
         self.assertEqual(stats["resolution"], "352x288")
+
+    def test_stopped_gate_worker_does_not_report_old_tracking_rate(self):
+        c = cam(role="inout")
+        now = app.time.monotonic()
+        c.times.extend((now - 0.2, now - 0.1))
+        self.assertGreater(c.stats(self.thresholds)["fps"], 0)
+        c.times.clear()
+        c.times.extend((now - 10.2, now - 10.1))
+        stats = c.stats(self.thresholds)
+        self.assertEqual(stats["fps"], 0)
+        self.assertGreater(stats["tracked_ago"], 3)
 
     def test_overdue_head_counts_leave_capacity_for_gate_tracking(self):
         engine = app.Engine.__new__(app.Engine)

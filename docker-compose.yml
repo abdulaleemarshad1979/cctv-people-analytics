@@ -2,6 +2,10 @@ services:
   mediamtx:
     image: bluenviron/mediamtx:1
     restart: unless-stopped
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "5"
     ports:
       - "${MEDIAMTX_BIND:-127.0.0.1}:8554:8554"   # RTSP; keep on localhost unless something outside must publish
       - "${WEBRTC_BIND:-0.0.0.0}:8189:8189/udp"   # live video to the browsers (WebRTC); must be reachable from them
@@ -15,6 +19,10 @@ services:
     build: .
     image: cctv-people-analytics
     restart: unless-stopped
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "5"
     depends_on:
       - mediamtx
     ports:
@@ -37,6 +45,8 @@ services:
       DETECT_INTERVAL_S: ${DETECT_INTERVAL_S:-30}
       INOUT_WORKERS: ${INOUT_WORKERS:-}     # blank = by core count
       CROWD_WORKERS: ${CROWD_WORKERS:-}
+      ACTIVE_CAMERA_COUNT: ${ACTIVE_CAMERA_COUNT:-7}   # only open the first seven; preserve all saved camera settings
+      WEB_THREADS: ${WEB_THREADS:-64}      # blocking HLS playlists share these with API and health requests
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:5000/healthz', timeout=4)"]
       interval: 30s

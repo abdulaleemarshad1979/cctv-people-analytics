@@ -200,6 +200,7 @@ const panelHTML = `
   <label for="f-zone">Zone</label><input id="f-zone" maxlength="60">
   <label for="f-role">Role</label>
   <select id="f-role"><option value="inout">In / Out counting</option><option value="density">Crowd count + density</option><option value="both">Both (In/Out + density)</option><option value="off">Off</option></select>
+  <p class="note" id="p-role-note" hidden>A count line works only with In / Out counting or Both. Select Both to keep crowd density and count crossings.</p>
   <label for="f-loc">Location</label>
   <select id="f-loc"><option value="inside">Inside temple / ghat</option><option value="outside">Outside temple / ghat</option></select>
   <div id="p-inout"><h3>Count line</h3>
@@ -234,6 +235,7 @@ function updateLive(c) {
   const slow = tracks(c) && c.status === "live" && c.fps < 0.8 * c.target_fps;
   const parts = [];
   if (tracks(c)) parts.push(`Tracking ${c.fps}/s (target ${c.target_fps}/s)` + (slow ? " – too slow, crossings may be missed" : ""),
+    c.error ? `Counting error: ${c.error}` : c.tracked_ago == null ? "Counting has not started" : c.tracked_ago > 3 ? `Counting stopped ${c.tracked_ago}s ago` : "Counting active",
     c.resolution ? `Input ${c.resolution}` + (Number(c.resolution.split("x")[0]) < 640 ? " – too small for reliable counting" : "") : "Input pending");
   if (dense(c)) parts.push(c.counted_ago == null ? "Crowd count pending" : `Crowd count ${c.counted_ago} s ago`,
     `detector ${c.detected ?? "–"} · crowd model ${c.crowd_model_count ?? "–"}`);
@@ -254,7 +256,8 @@ function updateLive(c) {
 }
 
 function showRole(role) {
-  $("#p-inout").classList.toggle("hidden", role === "off");  // every camera keeps its own line; used when role is In/Out or Both
+  $("#p-inout").classList.toggle("hidden", role !== "inout" && role !== "both");
+  $("#p-role-note").hidden = role !== "density";
   $("#p-density").classList.toggle("hidden", role !== "density" && role !== "both");
   $("#m-badge").textContent = {inout: "In / Out", density: "Density", both: "Both", off: "Off"}[role];
 }
@@ -275,6 +278,7 @@ function fill(d) {
 }
 
 async function openModal(id) {
+  wantHd = false;
   openId = id;
   $("#m-panel").innerHTML = panelHTML;
   $("#modal").classList.remove("hidden");
@@ -435,11 +439,11 @@ async function saveLine() {
   } catch (e) { msg(e.message); }
 }
 
-// ---------- Live viewer: WebRTC from MediaMTX (the camera's main stream when it has one), MJPEG when that cannot start ----------
+// ---------- Live viewer: keep the analysis sub-stream stable; HD is an explicit choice ----------
 const hdBroken = new Set();   // cameras whose main stream would not play: sub-stream only
-let viewerStop = null, hdStop = null, viewerMode = "mjpeg", liveTimer = null;
+let viewerStop = null, hdStop = null, viewerMode = "mjpeg", liveTimer = null, wantHd = false;
 const hud = $("#m-hud"), vSub = $("#m-video"), vHd = $("#m-video-hd");
-let video = vSub;   // the one on screen: the sub-stream first (starts at once), the main stream once that plays
+let video = vSub;   // the one on screen: the sub-stream first; HD only on request
 
 function setLive(show) {   // the live picture (video or MJPEG) on / off, e.g. off while the snapshot editor is open
   for (const v of [vSub, vHd]) v.style.display = show && viewerMode === "rtc" && v === video ? "block" : "none";
@@ -456,10 +460,47 @@ function stopViewer() {
   vSub.style.display = vHd.style.display = "none"; hud.hidden = true;
 }
 
+function offerHd(id) {
+  const c = data && data.cameras.find(x => x.id === id);
+  if (!wantHd || !c?.play_hd || hdBroken.has(id) || hdStop || openId !== id) return;
+  $("#m-hd").textContent = "Loading HD…";
+  const path = c.play_hd, baseline = vHd.getVideoPlaybackQuality().totalVideoFrames;
+  hdStop = playWhep(vHd, path, (ev, why) => {
+    if (openId !== id) return;
+    if (ev === "playing") setTimeout(() => {
+      if (!hdStop || openId !== id) return;
+      if (vHd.getVideoPlaybackQuality().totalVideoFrames - baseline < 8) {
+        hdStop(); hdStop = null; hdBroken.add(id); wantHd = false;
+        $("#m-hd").textContent = "HD unavailable"; $("#m-hd").disabled = true;
+        return;
+      }
+      viewerMode = "rtc"; video = vHd; $("#m-live").src = "data:,"; setLive(true);
+      if (viewerStop) viewerStop(); viewerStop = null;
+      $("#m-hd").textContent = "View standard";
+    }, 2000);
+    else {
+      console.warn(`[video] HD ${path}: ${why}`);
+      hdStop = null; hdBroken.add(id); wantHd = false;
+      $("#m-hd").textContent = "HD unavailable"; $("#m-hd").disabled = true;
+      if (video === vHd) startViewer(id);
+    }
+  });
+}
+
+$("#m-hd").onclick = () => {
+  if (!openId) return;
+  wantHd = !wantHd;
+  if (wantHd) offerHd(openId);
+  else { $("#m-hd").textContent = "View HD"; startViewer(openId); }
+};
+
 function startViewer(id) {
   stopViewer();
   const c = data && data.cameras.find(x => x.id === id);
   const sub = c && c.play, hd = c && c.play_hd;
+  $("#m-hd").hidden = !sub || !hd;
+  $("#m-hd").disabled = hdBroken.has(id);
+  $("#m-hd").textContent = hdBroken.has(id) ? "HD unavailable" : wantHd ? "View standard" : "View HD";
   const mjpeg = () => { viewerMode = "mjpeg"; $("#m-live").src = `/api/cameras/${id}/stream.mjpg`; setLive(true); };
   const start = (path, el, onPlaying, onFail) => playWhep(el, path, (ev, why) => {
     if (openId !== id) return;
@@ -469,14 +510,7 @@ function startViewer(id) {
     if (!sub && !hd) return mjpeg();
     viewerStop = start(sub || hd, vSub, () => {
       viewerMode = "rtc"; video = vSub; $("#m-live").src = "data:,"; setLive(true);
-      // The main stream is pulled from the camera on demand and may not be playable (H.265, B-frames): try it behind the picture
-      // that already shows, and swap only once it plays.
-      // "playing" fires before MediaMTX rejects a stream it cannot carry (B-frames), so swap only after 2 s of steady frames,
-      // and come back to the sub-stream (for good, this session) if the main stream drops later.
-      if (sub && hd && !hdBroken.has(id)) hdStop = start(hd, vHd, () => setTimeout(() => {
-        if (!hdStop || openId !== id || vHd.getVideoPlaybackQuality().totalVideoFrames < 25) return;
-        video = vHd; setLive(true); if (viewerStop) viewerStop(); viewerStop = null;
-      }, 2000), () => { hdStop = null; hdBroken.add(id); if (video === vHd && openId === id) startViewer(id); });
+      if (sub) offerHd(id);
     }, () => { viewerStop = null; mjpeg(); });
   };
   // Smoothest first: LL-HLS of the camera's own video (H.265 needs a browser that decodes it), then the server's
@@ -485,7 +519,7 @@ function startViewer(id) {
     if (!paths.length) return rtc();
     viewerStop = playHls(vSub, paths[0], (ev, why) => {
       if (openId !== id) return;
-      if (ev === "playing") { viewerMode = "rtc"; video = vSub; $("#m-live").src = "data:,"; setLive(true); }
+      if (ev === "playing") { viewerMode = "rtc"; video = vSub; $("#m-live").src = "data:,"; setLive(true); offerHd(id); }
       else { console.warn(`[video] HLS ${paths[0]}: ${why}`); viewerStop = null; hls(paths.slice(1)); }
     });
   };
