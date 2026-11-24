@@ -47,6 +47,8 @@
         <select class="zone-select" id="zone" aria-label="Zone"><option value="">All zones</option></select>
       </div>
       <div class="nav-right-group"><span class="infer-chip" id="infer">Connecting…</span>
+        <span class="report-dates" title="Hourly IN / OUT report, kept across restarts"><input type="date" id="rep-from" aria-label="Report from"><input type="date" id="rep-to" aria-label="Report to">
+          <button class="pill connect-btn" id="rep-dl" type="button">Download hourly report</button></span>
         <button class="pill connect-btn" id="open-sources" type="button">Connect cameras</button>
         <a href="/logout" class="logout-btn" title="Sign Out"><span>Logout</span>
           <svg style="width:14px;height:14px" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg></a></div>
@@ -56,8 +58,8 @@
       <div class="stat"><small>Total people</small><strong id="t-people">–</strong><span>Inside + outside</span></div>
       <div class="stat inside"><small>Inside temple / ghat</small><strong id="t-ins">–</strong><span id="t-ins-sub">&nbsp;</span></div>
       <div class="stat outside"><small>Outside temple / ghat</small><strong id="t-outs">–</strong><span id="t-outs-sub">&nbsp;</span></div>
-      <div class="stat in"><small>Gate IN</small><strong id="t-in">–</strong><span id="t-gates"></span></div>
-      <div class="stat out"><small>Gate OUT</small><strong id="t-out">–</strong><span id="t-net">&nbsp;</span></div>
+      <div class="stat in"><small>Gate IN · total</small><strong id="t-in">–</strong><span id="t-gates"></span></div>
+      <div class="stat out"><small>Gate OUT · total</small><strong id="t-out">–</strong><span id="t-net">&nbsp;</span></div>
       <div class="stat"><small>Peak density</small><strong id="t-peak">–</strong><span id="t-peak-cam">people / m²</span></div>
       <div class="stat"><small>Cameras online</small><strong id="t-online">–</strong><span id="t-total"></span></div>
     </div>

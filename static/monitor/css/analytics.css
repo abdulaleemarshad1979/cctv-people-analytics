@@ -173,3 +173,6 @@ button { font: inherit; }
 .full-view-body:fullscreen .fs-btn, .full-view-body.pseudo-fs .fs-btn { right: 20px; bottom: 20px; width: 46px; height: 46px; }
 .full-view-body.idle .fs-btn, .full-view-body.idle .fs-title { opacity: 0; }
 .full-view-body.idle:fullscreen, .full-view-body.pseudo-fs.idle { cursor: none; }
+
+.report-dates { display: inline-flex; align-items: center; gap: 6px; }
+.report-dates input { font: 12px system-ui, sans-serif; padding: 4px 6px; border: 1px solid var(--border-color); border-radius: 6px; background: #fff; }

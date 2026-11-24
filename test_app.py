@@ -34,6 +34,47 @@ class AppTests(unittest.TestCase):
         self.assertEqual((header["w"], header["h"]), (960, 540))   # shrunk to the detector size
         self.assertEqual(boxes, [(20.0, 40.0, 60.0, 80.0)])        # scaled back x2 to the full frame
 
+    def _engine_with_history(self, directory):
+        from history import History
+        engine = app.Engine.__new__(app.Engine)
+        engine.cameras = {"c1": cam()}
+        engine.history = History(f"{directory}/history.db")
+        return engine
+
+    def test_counts_are_saved_once_and_survive_a_restart(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            engine = self._engine_with_history(d)
+            c = engine.cameras["c1"]
+            c.counter.in_count, c.counter.out_count = 5, 2
+            engine.flush_history()
+            c.counter.in_count = 7
+            engine.flush_history()
+            engine.flush_history()                      # nothing new: must not add again
+            self.assertEqual(engine.history.totals()["c1"], (7, 2))
+            reborn = self._engine_with_history(d).cameras["c1"]   # after a restart the counter starts at 0 ...
+            reborn.base_in, reborn.base_out = engine.history.totals()["c1"]
+            reborn.counter.in_count = 1                 # ... and the shown total keeps going up from the saved one
+            self.assertEqual(reborn.counts(), {"in": 8, "out": 2, "occupancy_change": 6})
+
+    def test_report_csv_lists_hours_and_totals(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            engine = self._engine_with_history(d)
+            engine.history.add_counts("c1", 4, 1)
+            old, app.engine = app.engine, engine
+            try:
+                client = app.app.test_client()
+                with client.session_transaction() as sess:
+                    sess["user"] = app.AUTH[0]
+                day = engine.history.hour_key()[:10]
+                body = client.get(f"/api/report.csv?from={day}&to={day}").get_data(as_text=True)
+                self.assertIn(",c1,C1,", body)
+                self.assertIn(",4,1,3,", body)           # IN, OUT, net
+                self.assertEqual(client.get("/api/report.csv?from=nope").status_code, 400)
+            finally:
+                app.engine = old
+
     def test_main_stream_path_of_a_sub_stream(self):
         self.assertEqual(app.main_path("/live1s2.sdp"), "/live1s1.sdp")
         self.assertIsNone(app.main_path("/live1s1.sdp"))   # already the main stream

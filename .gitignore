@@ -5,3 +5,4 @@ cameras.json
 __pycache__/
 *.pyc
 nvrs.json
+history.db*

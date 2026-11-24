@@ -35,6 +35,8 @@ The current deployment uses **Cameras 01–07** (`ACTIVE_CAMERA_COUNT=7`). Camer
 | Deploy a new revision | `sudo git pull --ff-only origin main && sudo docker compose up -d --build` (from `/opt/cctv-people-analytics`) |
 | Check codec, resolution and source FPS for all seven cameras | `sudo docker compose exec -T analytics python scripts/diagnose_streams.py` |
 
+**Counts are permanent.** IN / OUT are written every 10 s to `config/history.db` (one row per camera per hour); the totals on the site include everything counted before earlier restarts and only ever go up. **Download hourly report** (top bar, pick From / To dates) gives a CSV with every hour per camera, an all-cameras row per hour and the period totals; hours are IST (`REPORT_UTC_OFFSET_MIN`, default 330). Counts from before this feature existed were never stored and cannot be recovered.
+
 Your camera list and settings live in `config/` and weights in `weights/`; neither is overwritten by updates. The image is CPU-only. The dashboard has a login page (cookie session, 12 h, with a Logout button); the default `admin` / `admin123` is public in this repo, so change it. Do not expose port 5000 to the internet; keep it on your LAN/VPN, and put it behind HTTPS if it leaves a trusted network.
 
 

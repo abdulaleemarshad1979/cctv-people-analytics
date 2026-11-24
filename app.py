@@ -5,8 +5,11 @@ people per m2), "both" (tracked crossings plus density) or "off", and a location
 (inside or outside the temple/ghat) used to split the people totals. One capture thread per camera keeps only the latest frame; a single
 inference thread shares one model across all cameras and serves whichever is most overdue.
 """
+import atexit
+import csv
 import hashlib
 import hmac
+import io
 import ipaddress
 import json
 import logging
@@ -29,6 +32,7 @@ from urllib.parse import quote
 
 import cv2
 from flask import Flask, Response, abort, jsonify, redirect, request, session
+from history import History
 from people_analytics import LineCounter, estimate_camera_geometry, estimate_height_from_person
 
 # Low-latency RTSP read, as CCTV_MONITOR: no input buffering. (Its short probe options are left out: they can fail on cameras that send codec info late.)
@@ -42,6 +46,8 @@ log = logging.getLogger("analytics")
 ROOT = Path(__file__).parent
 app = Flask(__name__, static_folder=str(ROOT / "static"))
 CONFIG_PATH = Path(os.getenv("ANALYTICS_CONFIG", str(ROOT / "cameras.json")))
+HISTORY_FLUSH_S = 10   # new crossings are written to history.db this often (at most this many seconds of counts can be lost in a crash)
+PEOPLE_SAMPLE_S = 60   # crowd cameras add one head-count sample to the hourly average / peak this often
 MODEL_PATH = os.getenv("PEOPLE_MODEL", str(ROOT / "yolov8n.pt"))
 INOUT_IMGSZ = int(os.getenv("GATE_IMGSZ", "960"))   # detector size for the gates: people far from the camera are only a few dozen px tall in a 1280x720 sub-stream
 INOUT_CONF = float(os.getenv("INOUT_CONFIDENCE", "0.35"))   # gate detector confidence, as active_pixel_html_camera_site
@@ -333,6 +339,8 @@ class Camera:
         self.grabs = self.reconnects = 0   # decoded frames / re-opens: the health check turns these into source fps and drop-outs
         self.size = None                   # (width, height) the camera sends
         self.keyframes = False             # reading keyframes only (KeyframeReader): an idle density camera
+        self.base_in = self.base_out = 0   # lifetime totals from history.db at start-up; the counter holds this session's crossings
+        self.saved_in = self.saved_out = 0  # of the counter's crossings, how many are already in history.db
         self.view_on, self.view_until = False, 0.0   # view_loop is publishing <id>_view (H.264) to MediaMTX, until view_until
         self.recent = deque(maxlen=10)   # (arrived, seq, frame) while watched: the viewer's de-jitter buffer
         self.jpegs = {}                  # width -> (key, jpeg): viewers and tiles of one frame share one encode
@@ -555,10 +563,15 @@ class Camera:
             return 0.0
         return round((len(t) - 1) / (t[-1] - t[0]), 2) if t[-1] > t[0] else 0.0
 
+    def counts(self):
+        """Lifetime IN / OUT: the history from before the last restarts plus this session's crossings. Caller holds the lock."""
+        n_in, n_out = self.base_in + self.counter.in_count, self.base_out + self.counter.out_count
+        return {"in": n_in, "out": n_out, "occupancy_change": n_in - n_out}
+
     def stats(self, thresholds):
         with self.lock:
             cfg, people, status = self.cfg, self.people, self.status
-            counts = self.counter.counts()
+            counts = self.counts()
             tracked_at = self.times[-1] if self.times else None
         counted_at, visible = self.counted_at, self.visible
         with self.lock:
@@ -592,7 +605,7 @@ class Camera:
         with self.lock:
             seq, frame = (item[1], item[2]) if item else (self.frame_seq, self.frame)
             cfg, dets = self.cfg, list(self.dets)
-            counts, people = self.counter.counts(), self.people
+            counts, people = self.counts(), self.people
         if frame is None:
             return None
         label = {"inout": f"IN {counts['in']}  OUT {counts['out']}",
@@ -721,6 +734,10 @@ class Engine:
             cam.hub_base, cam.hub_native = self.mediamtx, cam.source.startswith(self.mediamtx + "/")
             cam.conn = validated_connection(raw.get("connection") or {})
             self.cameras[cfg["id"]] = cam
+        self.history = History(CONFIG_PATH.parent / "history.db", int(os.getenv("REPORT_UTC_OFFSET_MIN", "330")))
+        for cam_id, (n_in, n_out) in self.history.totals().items():
+            if cam_id in self.cameras:
+                self.cameras[cam_id].base_in, self.cameras[cam_id].base_out = n_in, n_out
         self.rate_times = deque(maxlen=60)
         self.active_head_jobs = 0
         self.gates_since_head = 0
@@ -793,6 +810,33 @@ class Engine:
             threading.Thread(target=self.crowd_loop, name=f"crowd-{k}", daemon=True).start()
             time.sleep(0.25)  # model checkpoints can temporarily need twice their steady RAM while loading
         threading.Thread(target=self.health_loop, name="health", daemon=True).start()
+        threading.Thread(target=self.history_loop, name="history", daemon=True).start()
+        atexit.register(self.flush_history)   # a normal stop writes the last few seconds too
+
+    def flush_history(self, sample_people=False):
+        """Write each camera's new crossings (and, when asked, its head count) to history.db."""
+        for cam in list(self.cameras.values())[:ACTIVE_CAMERA_COUNT]:
+            with cam.lock:
+                d_in, d_out = cam.counter.in_count - cam.saved_in, cam.counter.out_count - cam.saved_out
+                people = cam.people if sample_people and cam.cfg["role"] in DENSITY and cam.status == "live" else None
+            try:
+                if d_in or d_out:
+                    self.history.add_counts(cam.cfg["id"], d_in, d_out)
+                    with cam.lock:
+                        cam.saved_in, cam.saved_out = cam.saved_in + d_in, cam.saved_out + d_out
+                if people is not None:
+                    self.history.add_people(cam.cfg["id"], people)
+            except Exception:
+                log.exception("Could not write the count history for %s", cam.cfg["id"])
+
+    def history_loop(self):
+        last_sample = 0.0
+        while True:
+            time.sleep(HISTORY_FLUSH_S)
+            sample = time.monotonic() - last_sample >= PEOPLE_SAMPLE_S
+            if sample:
+                last_sample = time.monotonic()
+            self.flush_history(sample)
 
     def health_loop(self):
         """Every HEALTH_S: say what is wrong and why (offline, slow source, small picture, reconnects, overloaded CPU)."""
@@ -1150,12 +1194,45 @@ def calibrate_height(cam_id):
     return jsonify(detail(cam))
 
 
-@app.post("/api/cameras/<cam_id>/reset-counts")
-def reset_counts(cam_id):
-    cam = cam_or_404(cam_id)
-    with cam.lock:
-        cam.counter.reset_counts()
-    return jsonify(detail(cam))
+@app.get("/api/report.csv")
+def report_csv():
+    """Hourly IN / OUT (and crowd) report as an Excel-friendly CSV, for local dates ?from=YYYY-MM-DD&to=YYYY-MM-DD (default today)."""
+    today = datetime.now(engine.history.tz).strftime("%Y-%m-%d")
+    first = request.args.get("from", today)
+    last = request.args.get("to", first)
+    try:
+        days = (datetime.strptime(last, "%Y-%m-%d") - datetime.strptime(first, "%Y-%m-%d")).days
+    except ValueError:
+        return jsonify(error="Dates must look like 2026-11-24"), 400
+    if not 0 <= days <= 366:
+        return jsonify(error="Pick a start date up to a year before the end date"), 400
+    engine.flush_history()   # the report includes crossings counted a moment ago
+    names = {c.cfg["id"]: c.cfg for c in engine.cameras.values()}
+    out = io.StringIO()
+    out.write("\ufeff")   # lets Excel read the names as UTF-8
+    writer = csv.writer(out)
+    writer.writerow(["Hour (local)", "Camera", "Name", "Zone", "Location", "IN", "OUT", "Net (IN-OUT)", "People avg", "People peak"])
+    rows, hours, period = engine.history.rows(first, last), {}, {}
+    for hour, cam_id, n_in, n_out, avg, peak in rows:
+        cfg = names.get(cam_id, {})
+        writer.writerow([hour, cam_id, cfg.get("name", cam_id), cfg.get("zone", ""), cfg.get("location", ""), n_in, n_out, n_in - n_out,
+                         "" if avg is None else avg, "" if peak is None else peak])
+        for table, key in ((hours, hour), (period, cam_id)):
+            t = table.setdefault(key, [0, 0])
+            t[0] += n_in
+            t[1] += n_out
+    writer.writerow([])
+    writer.writerow(["All cameras, per hour"])
+    for hour, (n_in, n_out) in sorted(hours.items()):
+        writer.writerow([hour, "ALL", "All cameras", "", "", n_in, n_out, n_in - n_out, "", ""])
+    writer.writerow([])
+    writer.writerow([f"Total {first} to {last}"])
+    for cam_id, (n_in, n_out) in sorted(period.items()):
+        writer.writerow(["", cam_id, names.get(cam_id, {}).get("name", cam_id), "", "", n_in, n_out, n_in - n_out, "", ""])
+    writer.writerow(["", "ALL", "All cameras", "", "", sum(v[0] for v in period.values()), sum(v[1] for v in period.values()),
+                     sum(v[0] - v[1] for v in period.values()), "", ""])
+    return Response(out.getvalue(), mimetype="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="hourly-report-{first}_to_{last}.csv"', "Cache-Control": "no-store"})
 
 
 def source_row(cam):

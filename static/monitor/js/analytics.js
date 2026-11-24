@@ -208,11 +208,11 @@ const panelHTML = `
   <div id="p-inout"><h3>Count line</h3>
     <label for="f-side">Direction</label>
     <select id="f-side"><option value="positive">Direction A is IN</option><option value="negative">Direction B is IN</option></select>
-    <button class="btn" id="b-line">Edit count line</button><button class="btn danger" id="b-reset">Reset counts</button>
+    <button class="btn" id="b-line">Edit count line</button>
     <div id="p-line-edit" hidden><p class="note">Drag the round handles to move or extend an end, or drag the line to move it. Save when done.</p>
       <button class="btn" id="b-line-save">Save line</button><button class="btn ghost" id="b-flip">Flip IN direction</button>
       <button class="btn ghost" id="b-extend">Extend to edges</button><button class="btn ghost" id="b-line-default">Reset line</button></div>
-    <p class="note">Press Edit count line to pause on a large picture. Drag either yellow circle to the entrance boundary, drag the line to move both ends, then press Save line. The arrow points toward IN. Place the line across the walking path, away from stalls or places where people stand. Counts reset only on request or server restart.</p></div>
+    <p class="note">Press Edit count line to pause on a large picture. Drag either yellow circle to the entrance boundary, drag the line to move both ends, then press Save line. The arrow points toward IN. Place the line across the walking path, away from stalls or places where people stand. Totals are permanent: they keep adding up across restarts (saved every few seconds) and appear in the hourly report.</p></div>
   <div id="p-density"><h3>Area &amp; calibration</h3>
     <div class="row"><div><label for="f-vfov">Vertical FOV (°)</label><input id="f-vfov" type="number" step="0.1"></div>
       <div><label for="f-hfov">Horizontal FOV (°)</label><input id="f-hfov" type="number" step="0.1"></div>
@@ -288,7 +288,6 @@ async function openModal(id) {
   liveTimer = setInterval(async () => { try { const d = await api(`/api/cameras/${id}`); updateLive(d); } catch (e) { /* next tick */ } }, 700);
   $("#f-role").onchange = () => showRole(val("f-role"));
   $("#b-save").onclick = () => save().then(() => msg("Saved.")).catch(e => msg(e.message));
-  $("#b-reset").onclick = () => api(`/api/cameras/${id}/reset-counts`, {}).then(() => msg("Counts reset.")).catch(e => msg(e.message));
   $("#b-line").onclick = startLine;
   $("#b-line-save").onclick = saveLine;
   $("#b-flip").onclick = () => { $("#f-side").value = val("f-side") === "positive" ? "negative" : "positive"; drawLine(); };
@@ -744,3 +743,11 @@ document.addEventListener("keydown", e => { if (e.key === "Escape" && !srcModal.
 poll(); setInterval(poll, 2000);
 setInterval(refreshImages, 100);
 setInterval(manageTiles, 1000);
+
+// ---------- Hourly report ----------
+const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);   // the browser's local date
+$("#rep-from").value = $("#rep-to").value = today;
+$("#rep-dl").onclick = () => {
+  const from = $("#rep-from").value || today, to = $("#rep-to").value || from;
+  location.href = `/api/report.csv?from=${from}&to=${to}`;   // the login cookie goes with it; the browser saves the file
+};
