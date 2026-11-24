@@ -166,7 +166,8 @@ function startTile(t) {
         console.warn(`[video] ${id} ${mode}: ${why}`);
         if (mode === "hls" && why === "manifestIncompatibleCodecsError") t.noRtc = t.noHls = true;
         t.stop = null; t.mode = null; t.el.dataset.playing = "";
-        if (mode === "h264" && (t.retries = (t.retries || 0) + 1) <= 2) return attempt(i);   // a hiccup in the H.264 copy: start it again before giving up
+        if (why !== "manifestIncompatibleCodecsError" && (t.retries = (t.retries || 0) + 1) <= 2) return attempt(i);   // a hiccup (slow start, busy server): try the same way again before changing
+        t.retries = 0;
         attempt(i + 1);
       }
     });
