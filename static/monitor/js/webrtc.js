@@ -58,7 +58,7 @@ function playWhep(video, path, onEvent) {
 function playHls(video, path, onEvent) {
   const src = `/hls/${encodeURIComponent(path)}/index.m3u8?cookieCheck=1`;   // cookieCheck: MediaMTX otherwise redirects to /<path>/index.m3u8, losing the /hls prefix
   let dead = false, playing = false, hls = null, lastTime = -1, still = 0, recoveries = 0;
-  const timer = setTimeout(() => !playing && fail("no video within 25 s"), 25000);
+  const timer = setTimeout(() => !playing && fail("no video within 60 s"), 60000);   // an H.264 copy waits ~10 s for its encoder plus ~10 s of video, longer when the server is busy
   const watchdog = setInterval(() => {
     if (!playing || document.hidden) return;
     still = video.currentTime === lastTime ? still + 1 : 0;
